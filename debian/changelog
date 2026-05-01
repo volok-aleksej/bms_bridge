@@ -1,0 +1,9 @@
+bms-bridge (1.0.0) UNRELEASED; urgency=medium
+
+  * Initial public release. Bridges a JK BMS (BLE) to a Pylontech V3.3
+    inverter (RS485): parses cell_info / settings / device_info from
+    the BMS and answers CID2 0x42 / 0x44 / 0x47 / 0x92 with live data.
+    Auto-splits large packs across virtual modules. Shipped as a
+    systemd service.
+
+ -- alexey <elenaluk89@gmail.com>  Sat, 02 May 2026 00:30:00 +0000

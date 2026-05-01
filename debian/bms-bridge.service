@@ -1,0 +1,14 @@
+[Unit]
+Description=JK BMS to Pylontech RS485 inverter bridge
+After=network.target bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+Environment=BMS_BRIDGE_CONFIG=/etc/bms_bridge/bms_bridge.conf
+ExecStart=/usr/bin/bms_bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

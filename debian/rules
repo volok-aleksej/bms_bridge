@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cmake
+
+# Stage everything to debian/tmp/ so dh_install can pick only the files
+# listed in debian/bms-emulator.install. Side artifacts produced by the
+# vendored SimpleBLE install rules (its headers, static archive, .pc file)
+# are left behind in debian/tmp/ and never enter the final .deb.
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/tmp
+
+# SimpleBLE's install() rules drop a bunch of files we deliberately skip;
+# do not promote those to a build error.
+override_dh_missing:
+	dh_missing
+
+override_dh_auto_test:
+	cd obj-* && ctest --output-on-failure

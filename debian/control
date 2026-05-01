@@ -1,0 +1,24 @@
+Source: bms-bridge
+Section: utils
+Priority: optional
+Maintainer: alexey <elenaluk89@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake,
+               pkgconf,
+               libconfuse-dev,
+               libspdlog-dev,
+               libdbus-1-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: bms-bridge
+Architecture: amd64
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         bluez
+Description: BLE-to-RS485 bridge between a JK BMS and a Pylontech-speaking inverter
+ bms_bridge connects to a JK BMS over Bluetooth Low Energy, parses the live
+ cell / pack telemetry and the configured protection limits, then masquerades
+ as a Pylontech V3.3 battery rack on RS485 so a hybrid inverter sees the real
+ BMS data. Large packs are automatically exposed as multiple virtual modules
+ so capacities beyond a single module's u16 mAh field still fit the protocol.

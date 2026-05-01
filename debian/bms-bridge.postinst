@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+CONFIG_DIR=/etc/bms_bridge
+CONFIG_FILE=$CONFIG_DIR/bms_bridge.conf
+TEMPLATE_FILE=/usr/share/bms_bridge/bms_bridge.conf.template
+
+case "$1" in
+    configure)
+        # First install or upgrade: drop a working config in place only if
+        # the operator has not already customised one. Existing files are
+        # left strictly alone, even if the template has new fields — that's
+        # documentation work, not a runtime concern.
+        if [ ! -e "$CONFIG_FILE" ] && [ -e "$TEMPLATE_FILE" ]; then
+            mkdir -p "$CONFIG_DIR"
+            cp "$TEMPLATE_FILE" "$CONFIG_FILE"
+            chmod 0644 "$CONFIG_FILE"
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
