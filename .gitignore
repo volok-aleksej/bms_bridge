@@ -24,8 +24,5 @@ debian/*.debhelper
 debian/*.debhelper.log
 debian/bms-bridge/
 
-# Local capture / scratch
-btsnoop_hci.log
-
 # Claude Code session metadata
 .claude/
