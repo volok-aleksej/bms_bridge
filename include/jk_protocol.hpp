@@ -44,19 +44,35 @@ struct JkRequest {
 
 // frame_type = 0x03
 struct JkDeviceInfo {
-    std::string vendor_id;            // e.g. "JK_BD6A20S10P"
-    std::string hardware_version;     // e.g. "10.XW"
-    std::string firmware_version;     // e.g. "10.07"
+    std::string vendor_id;
+    std::string hardware_version;
+    std::string firmware_version;
     uint32_t    uptime_s = 0;
     uint32_t    power_on_count = 0;
     std::string device_name;
+    std::string login_password;
     std::string manufacturing_date;
     std::string serial_number;
+    std::string user_data_1;
+    std::string settings_password;
+    std::string user_data_2;
+    uint8_t  uart1_protocol = 0;
+    uint8_t  can_protocol = 0;
+    uint8_t  uart2_protocol = 0;
+    uint8_t  lcd_buzzer_trigger_protocol = 0;
+    uint32_t lcd_buzzer_trigger_value = 0;
+    uint32_t lcd_buzzer_release_value = 0;
+    uint32_t data_store_period_s = 0;
+    uint8_t  rcv_time_01h = 0;
+    uint8_t  rfv_time_01h = 0;
+    uint8_t  emerg_time = 0;
+    uint8_t  rebulk_soc_pct = 0;
 };
 
 //frame_type = 0x02
 struct JkCellInfo {
     std::vector<uint16_t> voltages_mv;          // length = enabled cells (≤32)
+    std::vector<uint16_t> resistance_uohm;      // µΩ (= 0.001 mΩ); same length as voltages_mv
     uint16_t average_voltage_mv = 0;
     uint16_t voltage_diff_mv = 0;
     uint8_t  max_voltage_cell_idx = 0;          // 0-based
@@ -66,15 +82,40 @@ struct JkCellInfo {
 // frame_type = 0x01. Values come straight off
 // the wire in JK-native units: mV, mA, 0.1 °C.
 struct JkSettings {
-    uint8_t  cell_count = 0;
-    uint16_t cell_ovp_mv = 0;          // cell over-voltage protection
-    uint16_t cell_uvp_mv = 0;          // cell under-voltage protection
-    uint16_t cell_uvpr_mv = 0;         // cell UVP recovery (used as "low warning")
-    int16_t  charge_otp_dC = 0;        // charge over-temperature
-    int16_t  discharge_otp_dC = 0;     // discharge over-temperature
-    int16_t  charge_utp_dC = 0;        // charge under-temperature (also reused for discharge low)
+    uint16_t smart_sleep_mv = 0;
+    uint16_t cell_uvp_mv = 0;
+    uint16_t cell_uvpr_mv = 0;
+    uint16_t cell_ovp_mv = 0;
+    uint16_t cell_ovpr_mv = 0;
+    uint16_t balance_trigger_mv = 0;
+    uint16_t soc_100_mv = 0;
+    uint16_t soc_0_mv = 0;
+    uint16_t request_charge_mv = 0;
+    uint16_t request_float_mv = 0;
+    uint16_t power_off_mv = 0;
     uint32_t max_charge_current_ma = 0;
+    uint32_t charge_ocp_delay_s = 0;
+    uint32_t charge_ocp_recovery_s = 0;
     uint32_t max_discharge_current_ma = 0;
+    uint32_t discharge_ocp_delay_s = 0;
+    uint32_t discharge_ocp_recovery_s = 0;
+    uint32_t scp_recovery_s = 0;
+    uint32_t max_balance_current_ma = 0;
+    int16_t  charge_otp_dC = 0;
+    int16_t  charge_otp_recovery_dC = 0;
+    int16_t  discharge_otp_dC = 0;
+    int16_t  discharge_otp_recovery_dC = 0;
+    int16_t  charge_utp_dC = 0;
+    int16_t  charge_utp_recovery_dC = 0;
+    int16_t  mosfet_otp_dC = 0;
+    int16_t  mosfet_otp_recovery_dC = 0;
+    uint8_t  cell_count = 0;
+    bool     charging_switch_on = false;
+    bool     discharging_switch_on = false;
+    bool     balancer_switch_on = false;
+    uint32_t nominal_capacity_mah = 0;
+    uint32_t scp_delay_us = 0;
+    uint16_t start_balance_mv = 0;
 };
 
 // frame_type = 0x02

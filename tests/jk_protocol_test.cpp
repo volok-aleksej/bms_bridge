@@ -143,6 +143,12 @@ TEST(ParseCellInfo, ExtractsRealCellFieldsFromSniff) {
     EXPECT_EQ(cells.voltage_diff_mv,     13);
     EXPECT_EQ(cells.max_voltage_cell_idx, 2);  // BMS reports 1-based '3' → 0-based 2
     EXPECT_EQ(cells.min_voltage_cell_idx, 7);  // BMS reports 1-based '8' → 0-based 7
+
+    ASSERT_EQ(cells.resistance_uohm.size(), 16u);
+    EXPECT_EQ(cells.resistance_uohm[0],  158);
+    EXPECT_EQ(cells.resistance_uohm[1],  159);
+    EXPECT_EQ(cells.resistance_uohm[7],  162);
+    EXPECT_EQ(cells.resistance_uohm[15], 161);
 }
 
 TEST(ParseCellInfo, ExtractsRealPackFieldsFromSniff) {
@@ -189,8 +195,94 @@ TEST(ParseDeviceInfo, ExtractsRealFieldsFromSniff) {
     EXPECT_EQ(d.uptime_s,           5'021'700u);
     EXPECT_EQ(d.power_on_count,     8u);
     EXPECT_EQ(d.device_name,        "15kwt");
+    EXPECT_EQ(d.login_password,     "1234");
     EXPECT_EQ(d.manufacturing_date, "260303");
-    EXPECT_EQ(d.serial_number,      "50930AN3A00");
+    EXPECT_EQ(d.serial_number,      "50930AN3A000183");
+    EXPECT_EQ(d.user_data_1,        "JK-BMS");
+    EXPECT_EQ(d.settings_password,  "123456");
+    EXPECT_EQ(d.user_data_2,        "JK-BMS");
+    EXPECT_EQ(d.uart1_protocol,                1);
+    EXPECT_EQ(d.can_protocol,                  0);
+    EXPECT_EQ(d.uart2_protocol,                1);
+    EXPECT_EQ(d.lcd_buzzer_trigger_protocol,   9);
+    EXPECT_EQ(d.lcd_buzzer_trigger_value,    100u);
+    EXPECT_EQ(d.lcd_buzzer_release_value,     95u);
+    EXPECT_EQ(d.data_store_period_s,        3600u);
+    EXPECT_EQ(d.rcv_time_01h,                  5);
+    EXPECT_EQ(d.rfv_time_01h,                 50);
+    EXPECT_EQ(d.emerg_time,                   30);
+    EXPECT_EQ(d.rebulk_soc_pct,                1);
+}
+
+// ---- parse_settings ------------------------------------------------------
+
+constexpr std::array<uint8_t, 300> kSniffedSettingsFrame = {
+    0x55, 0xAA, 0xEB, 0x90, 0x01, 0x52, 0xAC, 0x0D, 0x00, 0x00, 0xC4, 0x09, 0x00, 0x00, 0x54, 0x0B,
+    0x00, 0x00, 0x42, 0x0E, 0x00, 0x00, 0x7A, 0x0D, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x06, 0x0E,
+    0x00, 0x00, 0x8C, 0x0A, 0x00, 0x00, 0x10, 0x0E, 0x00, 0x00, 0x16, 0x0D, 0x00, 0x00, 0xBA, 0x09,
+    0x00, 0x00, 0xA0, 0x86, 0x01, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0xA0, 0x86,
+    0x01, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x58, 0x02,
+    0x00, 0x00, 0xBC, 0x02, 0x00, 0x00, 0x58, 0x02, 0x00, 0x00, 0xBC, 0x02, 0x00, 0x00, 0x58, 0x02,
+    0x00, 0x00, 0x9C, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x20, 0x03, 0x00, 0x00, 0xBC, 0x02,
+    0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x90, 0xCA, 0x04, 0x00, 0x05, 0x00, 0x00, 0x00, 0xB8, 0x0B, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0xA1, 0x07, 0x00, 0x90, 0x30, 0xF6, 0x00, 0x18, 0xFE,
+    0xFB, 0xFF, 0xFF, 0x1F, 0xA9, 0x7C, 0x0E, 0x00, 0xDD, 0xE2, 0x00, 0x51,
+};
+
+TEST(ParseSettings, RejectsCellInfoFrame) {
+    JkSettings s;
+    EXPECT_FALSE(parse_settings(kSniffedCellInfoFrame.data(),
+                                kSniffedCellInfoFrame.size(), s));
+}
+
+TEST(ParseSettings, ExtractsRealFieldsFromSniff) {
+    JkSettings s;
+    ASSERT_TRUE(parse_settings(kSniffedSettingsFrame.data(),
+                               kSniffedSettingsFrame.size(), s));
+
+    EXPECT_EQ(s.smart_sleep_mv,             3500u);
+    EXPECT_EQ(s.cell_uvp_mv,                2500u);
+    EXPECT_EQ(s.cell_uvpr_mv,               2900u);
+    EXPECT_EQ(s.cell_ovp_mv,                3650u);
+    EXPECT_EQ(s.cell_ovpr_mv,               3450u);
+    EXPECT_EQ(s.balance_trigger_mv,           10u);
+    EXPECT_EQ(s.soc_100_mv,                 3590u);
+    EXPECT_EQ(s.soc_0_mv,                   2700u);
+    EXPECT_EQ(s.request_charge_mv,          3600u);
+    EXPECT_EQ(s.request_float_mv,           3350u);
+    EXPECT_EQ(s.power_off_mv,               2490u);
+    EXPECT_EQ(s.max_charge_current_ma,    100'000u);
+    EXPECT_EQ(s.charge_ocp_delay_s,           60u);
+    EXPECT_EQ(s.charge_ocp_recovery_s,        60u);
+    EXPECT_EQ(s.max_discharge_current_ma, 100'000u);
+    EXPECT_EQ(s.discharge_ocp_delay_s,        300u);
+    EXPECT_EQ(s.discharge_ocp_recovery_s,      60u);
+    EXPECT_EQ(s.scp_recovery_s,                 5u);
+    EXPECT_EQ(s.max_balance_current_ma,       600u);
+    EXPECT_EQ(s.charge_otp_dC,                700);
+    EXPECT_EQ(s.charge_otp_recovery_dC,       600);
+    EXPECT_EQ(s.discharge_otp_dC,             700);
+    EXPECT_EQ(s.discharge_otp_recovery_dC,    600);
+    EXPECT_EQ(s.charge_utp_dC,               -100);
+    EXPECT_EQ(s.charge_utp_recovery_dC,         0);
+    EXPECT_EQ(s.mosfet_otp_dC,                800);
+    EXPECT_EQ(s.mosfet_otp_recovery_dC,       700);
+    EXPECT_EQ(s.cell_count,                    16);
+    EXPECT_TRUE(s.charging_switch_on);
+    EXPECT_TRUE(s.discharging_switch_on);
+    EXPECT_TRUE(s.balancer_switch_on);
+    EXPECT_EQ(s.nominal_capacity_mah,    314'000u);
+    EXPECT_EQ(s.scp_delay_us,                  5u);
+    EXPECT_EQ(s.start_balance_mv,           3000u);
 }
 
 // ---- JkFrameAssembler ----------------------------------------------------

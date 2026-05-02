@@ -169,6 +169,14 @@ bool parse_cell_info(const uint8_t* frame, size_t len,
     cells.min_voltage_cell_idx = frame[63 + cell_shift]
         ? static_cast<uint8_t>(frame[63 + cell_shift] - 1) : 0;
 
+    // Cell resistances follow the cell-voltage table: 24S → offset 64,
+    // 32S → offset 80. One u16 LE per cell in µΩ (×0.001 mΩ on the wire).
+    const size_t res_off = is_32s ? 80 : 64;
+    cells.resistance_uohm.reserve(cells.voltages_mv.size());
+    for (size_t i = 0; i < cells.voltages_mv.size(); ++i) {
+        cells.resistance_uohm.push_back(le16(frame + res_off + i * 2));
+    }
+
     // ----- pack-level -----
     // MOS-temp slot moved between revisions: 24S → byte 134; 32S → byte 144
     // (the latter falls inside the cell-resistance region of the older layout).
@@ -201,14 +209,29 @@ bool parse_device_info(const uint8_t* frame, size_t len, JkDeviceInfo& out) {
     if (frame[4] != kJkFrameTypeDeviceInfo) return false;
 
     out = {};
-    out.vendor_id          = read_string(frame +  6, 16);
-    out.hardware_version   = read_string(frame + 22,  8);
-    out.firmware_version   = read_string(frame + 30,  8);
+    out.vendor_id          = read_string(frame +   6, 16);
+    out.hardware_version   = read_string(frame +  22,  8);
+    out.firmware_version   = read_string(frame +  30,  8);
     out.uptime_s           = le32(frame + 38);
     out.power_on_count     = le32(frame + 42);
-    out.device_name        = read_string(frame + 46, 16);
-    out.manufacturing_date = read_string(frame + 78,  8);
-    out.serial_number      = read_string(frame + 86, 11);
+    out.device_name        = read_string(frame +  46, 16);
+    out.login_password     = read_string(frame +  62, 16);
+    out.manufacturing_date = read_string(frame +  78,  8);
+    out.serial_number      = read_string(frame +  86, 16);
+    out.user_data_1        = read_string(frame + 102, 16);
+    out.settings_password  = read_string(frame + 118, 16);
+    out.user_data_2        = read_string(frame + 134, 16);
+    out.uart1_protocol               = frame[184];
+    out.can_protocol                 = frame[185];
+    out.uart2_protocol               = frame[218];
+    out.lcd_buzzer_trigger_protocol  = frame[234];
+    out.lcd_buzzer_trigger_value     = le32(frame + 238);
+    out.lcd_buzzer_release_value     = le32(frame + 242);
+    out.data_store_period_s          = le32(frame + 262);
+    out.rcv_time_01h                 = frame[266];
+    out.rfv_time_01h                 = frame[267];
+    out.emerg_time                   = frame[269];
+    out.rebulk_soc_pct               = frame[278];
     return true;
 }
 
@@ -221,14 +244,39 @@ bool parse_settings(const uint8_t* frame, size_t len, JkSettings& out) {
     if (frame[4] != kJkFrameTypeSettings) return false;
 
     out = {};
-    out.cell_uvp_mv             = static_cast<uint16_t>(le32(frame +  10));
-    out.cell_uvpr_mv            = static_cast<uint16_t>(le32(frame +  14));
-    out.cell_ovp_mv             = static_cast<uint16_t>(le32(frame +  18));
-    out.max_charge_current_ma   = le32(frame +  50);
-    out.max_discharge_current_ma= le32(frame +  62);
-    out.charge_otp_dC           = static_cast<int16_t>(le32s(frame +  82));
-    out.discharge_otp_dC        = static_cast<int16_t>(le32s(frame +  90));
-    out.charge_utp_dC           = static_cast<int16_t>(le32s(frame +  98));
-    out.cell_count              = static_cast<uint8_t>(le32(frame + 114));
+    out.smart_sleep_mv             = static_cast<uint16_t>(le32(frame +   6));
+    out.cell_uvp_mv                = static_cast<uint16_t>(le32(frame +  10));
+    out.cell_uvpr_mv               = static_cast<uint16_t>(le32(frame +  14));
+    out.cell_ovp_mv                = static_cast<uint16_t>(le32(frame +  18));
+    out.cell_ovpr_mv               = static_cast<uint16_t>(le32(frame +  22));
+    out.balance_trigger_mv         = static_cast<uint16_t>(le32(frame +  26));
+    out.soc_100_mv                 = static_cast<uint16_t>(le32(frame +  30));
+    out.soc_0_mv                   = static_cast<uint16_t>(le32(frame +  34));
+    out.request_charge_mv          = static_cast<uint16_t>(le32(frame +  38));
+    out.request_float_mv           = static_cast<uint16_t>(le32(frame +  42));
+    out.power_off_mv               = static_cast<uint16_t>(le32(frame +  46));
+    out.max_charge_current_ma      = le32(frame +  50);
+    out.charge_ocp_delay_s         = le32(frame +  54);
+    out.charge_ocp_recovery_s      = le32(frame +  58);
+    out.max_discharge_current_ma   = le32(frame +  62);
+    out.discharge_ocp_delay_s      = le32(frame +  66);
+    out.discharge_ocp_recovery_s   = le32(frame +  70);
+    out.scp_recovery_s             = le32(frame +  74);
+    out.max_balance_current_ma     = le32(frame +  78);
+    out.charge_otp_dC              = static_cast<int16_t>(le32s(frame +  82));
+    out.charge_otp_recovery_dC     = static_cast<int16_t>(le32s(frame +  86));
+    out.discharge_otp_dC           = static_cast<int16_t>(le32s(frame +  90));
+    out.discharge_otp_recovery_dC  = static_cast<int16_t>(le32s(frame +  94));
+    out.charge_utp_dC              = static_cast<int16_t>(le32s(frame +  98));
+    out.charge_utp_recovery_dC     = static_cast<int16_t>(le32s(frame + 102));
+    out.mosfet_otp_dC              = static_cast<int16_t>(le32s(frame + 106));
+    out.mosfet_otp_recovery_dC     = static_cast<int16_t>(le32s(frame + 110));
+    out.cell_count                 = static_cast<uint8_t>(le32(frame + 114));
+    out.charging_switch_on         = le32(frame + 118) != 0;
+    out.discharging_switch_on      = le32(frame + 122) != 0;
+    out.balancer_switch_on         = le32(frame + 126) != 0;
+    out.nominal_capacity_mah       = le32(frame + 130);
+    out.scp_delay_us               = le32(frame + 134);
+    out.start_balance_mv           = static_cast<uint16_t>(le32(frame + 138));
     return true;
 }

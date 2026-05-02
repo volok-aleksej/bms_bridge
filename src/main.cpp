@@ -134,12 +134,16 @@ int main(int argc, char** argv) {
                             JkCellInfo cells;
                             JkPackInfo pack;
                             if (parse_cell_info(frame->data(), frame->size(), cells, pack)) {
-                                spdlog::debug("BMS: V={:.3f} I={:.3f} SoC={}% cells={} cycles={}",
+                                spdlog::debug("BMS: V={:.3f} I={:.3f} SoC={}% cells={} cycles={} "
+                                              "T1={:.1f} T2={:.1f} Tmos={:.1f}",
                                              pack.voltage_mv  / 1000.0,
                                              pack.current_ma  / 1000.0,
                                              pack.state_of_charge_pct,
                                              cells.voltages_mv.size(),
-                                             pack.cycle_count);
+                                             pack.cycle_count,
+                                             pack.battery_temp1_dC / 10.0,
+                                             pack.battery_temp2_dC / 10.0,
+                                             pack.power_tube_temp_dC / 10.0);
 
                                 if (auto prev = state.snapshot(); prev.pack) {
                                     if (prev.pack->errors_bitmask != pack.errors_bitmask) {
