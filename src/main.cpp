@@ -140,6 +140,24 @@ int main(int argc, char** argv) {
                                              pack.state_of_charge_pct,
                                              cells.voltages_mv.size(),
                                              pack.cycle_count);
+
+                                if (auto prev = state.snapshot(); prev.pack) {
+                                    if (prev.pack->errors_bitmask != pack.errors_bitmask) {
+                                        spdlog::warn("BMS errors_bitmask: {:#06x} -> {:#06x}",
+                                                     prev.pack->errors_bitmask, pack.errors_bitmask);
+                                    }
+                                    if (prev.pack->charging_enabled != pack.charging_enabled) {
+                                        spdlog::warn("BMS charge MOSFET: {} -> {}",
+                                                     prev.pack->charging_enabled ? "on" : "off",
+                                                     pack.charging_enabled ? "on" : "off");
+                                    }
+                                    if (prev.pack->discharging_enabled != pack.discharging_enabled) {
+                                        spdlog::warn("BMS discharge MOSFET: {} -> {}",
+                                                     prev.pack->discharging_enabled ? "on" : "off",
+                                                     pack.discharging_enabled ? "on" : "off");
+                                    }
+                                }
+
                                 state.apply_telemetry(std::move(cells), std::move(pack));
                             }
                         } else if (*type == kJkFrameTypeDeviceInfo) {
