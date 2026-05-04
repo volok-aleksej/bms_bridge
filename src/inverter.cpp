@@ -1,13 +1,12 @@
 #include "inverter.hpp"
 
+#include "dispatcher.hpp"
 #include "pylontech.hpp"
 
 #include <spdlog/fmt/bin_to_hex.h>
 #include <spdlog/spdlog.h>
 
 #include <fcntl.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -33,7 +32,8 @@ speed_t baud_to_speed(int baud) {
     }
 }
 
-constexpr size_t kRxBufLimit = 4096;
+constexpr size_t kRxBufLimit       = 4096;
+constexpr int    kReopenBackoffMs  = 5000;
 
 }
 
@@ -44,13 +44,11 @@ Inverter::Inverter(std::string device, int baud, uint8_t pylontech_address,
       pylontech_address_(pylontech_address),
       state_(state) {}
 
-Inverter::~Inverter() { stop(); }
-
-void Inverter::on_stop() {
-    if (stop_evfd_ >= 0) {
-        uint64_t one = 1;
-        (void)::write(stop_evfd_, &one, sizeof(one));
+Inverter::~Inverter() {
+    if (dispatcher_ && reopen_timer_.fd() >= 0) {
+        dispatcher_->unwatch(reopen_timer_.fd());
     }
+    close_uart();
 }
 
 int Inverter::open_uart() {
@@ -192,85 +190,47 @@ void Inverter::on_rx(const uint8_t* data, size_t len) {
     process_buffer();
 }
 
-void Inverter::run() {
-    spdlog::debug("inverter: thread started, device={} baud={} address={:#04x}",
-                  device_, baud_, pylontech_address_);
+void Inverter::on_uart_readable() {
+    uint8_t buf[512];
+    ssize_t r;
+    while ((r = ::read(uart_fd_, buf, sizeof(buf))) > 0) {
+        on_rx(buf, static_cast<size_t>(r));
+    }
+    if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        spdlog::warn("inverter: read error: {}, reopening UART",
+                     std::strerror(errno));
+        close_uart();
+        reopen_timer_.arm(std::chrono::milliseconds(kReopenBackoffMs));
+    }
+}
 
-    stop_evfd_ = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (stop_evfd_ < 0) {
-        spdlog::error("inverter: eventfd: {}", std::strerror(errno));
+void Inverter::close_uart() {
+    if (uart_fd_ < 0) return;
+    if (dispatcher_) dispatcher_->unwatch(uart_fd_);
+    ::close(uart_fd_);
+    uart_fd_ = -1;
+}
+
+void Inverter::try_open() {
+    uart_fd_ = open_uart();
+    if (uart_fd_ < 0) {
+        reopen_timer_.arm(std::chrono::milliseconds(kReopenBackoffMs));
         return;
     }
+    spdlog::info("inverter: UART {} opened at {} 8N1", device_, baud_);
+    dispatcher_->watch(uart_fd_, [this] { on_uart_readable(); });
+}
 
-    epfd_ = ::epoll_create1(EPOLL_CLOEXEC);
-    if (epfd_ < 0) {
-        spdlog::error("inverter: epoll_create1: {}", std::strerror(errno));
-        ::close(stop_evfd_);
-        stop_evfd_ = -1;
-        return;
-    }
+void Inverter::on_reopen_tick() {
+    if (uart_fd_ >= 0) return;
+    try_open();
+}
 
-    epoll_event ev{};
-    ev.events = EPOLLIN;
-    ev.data.fd = stop_evfd_;
-    ::epoll_ctl(epfd_, EPOLL_CTL_ADD, stop_evfd_, &ev);
-
-    while (!stopping()) {
-        if (uart_fd_ < 0) {
-            uart_fd_ = open_uart();
-            if (uart_fd_ < 0) {
-                epoll_event w[1];
-                (void)::epoll_wait(epfd_, w, 1, 5000);
-                continue;
-            }
-            spdlog::info("inverter: UART {} opened at {} 8N1", device_, baud_);
-            ev.events = EPOLLIN;
-            ev.data.fd = uart_fd_;
-            ::epoll_ctl(epfd_, EPOLL_CTL_ADD, uart_fd_, &ev);
-        }
-
-        epoll_event events[4];
-        int n = ::epoll_wait(epfd_, events, 4, -1);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            spdlog::error("inverter: epoll_wait: {}", std::strerror(errno));
-            break;
-        }
-        for (int i = 0; i < n; ++i) {
-            int fd = events[i].data.fd;
-            if (fd == stop_evfd_) {
-                uint64_t buf;
-                while (::read(stop_evfd_, &buf, sizeof(buf)) > 0) {}
-                continue;
-            }
-            if (fd == uart_fd_) {
-                uint8_t buf[512];
-                ssize_t r;
-                while ((r = ::read(uart_fd_, buf, sizeof(buf))) > 0) {
-                    on_rx(buf, static_cast<size_t>(r));
-                }
-                if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    spdlog::warn("inverter: read error: {}, reopening UART",
-                                 std::strerror(errno));
-                    ::epoll_ctl(epfd_, EPOLL_CTL_DEL, uart_fd_, nullptr);
-                    ::close(uart_fd_);
-                    uart_fd_ = -1;
-                }
-            }
-        }
-    }
-
-    if (uart_fd_ >= 0) {
-        ::close(uart_fd_);
-        uart_fd_ = -1;
-    }
-    if (epfd_ >= 0) {
-        ::close(epfd_);
-        epfd_ = -1;
-    }
-    if (stop_evfd_ >= 0) {
-        ::close(stop_evfd_);
-        stop_evfd_ = -1;
-    }
-    spdlog::debug("inverter: thread exiting");
+void Inverter::attach(Dispatcher& d) {
+    dispatcher_ = &d;
+    dispatcher_->watch(reopen_timer_.fd(), [this] {
+        reopen_timer_.consume();
+        on_reopen_tick();
+    });
+    try_open();
 }

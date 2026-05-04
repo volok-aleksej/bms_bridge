@@ -9,6 +9,8 @@ Environment=BMS_BRIDGE_CONFIG=/etc/bms_bridge/bms_bridge.conf
 ExecStart=/usr/bin/bms_bridge
 Restart=on-failure
 RestartSec=5
+StateDirectory=bms_bridge
+StateDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target

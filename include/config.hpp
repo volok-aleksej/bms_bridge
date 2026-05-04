@@ -19,6 +19,9 @@ struct AppConfig {
     std::string uart_device;
     int uart_baud = 115200;
     int pylontech_address = 2;
+
+    std::string history_db_path;
+    int history_ram_window_s;
 };
 
 bool load_config(const std::string& path, AppConfig& out, std::string& error);

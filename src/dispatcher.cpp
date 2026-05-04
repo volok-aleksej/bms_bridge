@@ -61,6 +61,13 @@ void Dispatcher::watch(int fd, Handler on_readable) {
     }
 }
 
+void Dispatcher::unwatch(int fd) {
+    handlers_.erase(fd);
+    if (epfd_ >= 0) {
+        epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);
+    }
+}
+
 void Dispatcher::add_timer(int period_ms, Handler on_tick) {
     auto t = std::make_unique<Timer>();
     t->arm_periodic(std::chrono::milliseconds(period_ms));

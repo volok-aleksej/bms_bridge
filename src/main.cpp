@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "dispatcher.hpp"
 #include "event_queue.hpp"
+#include "history.hpp"
 #include "inverter.hpp"
 #include "jk_protocol.hpp"
 #include "logger.hpp"
@@ -19,9 +20,10 @@
 namespace {
 
 void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " [-D level] [-U device_uuid]\n"
+    std::cerr << "Usage: " << prog << " [-D level] [-U device_uuid] [-d db_path]\n"
               << "  -Dx   log verbosity 1..5 (1=error, 2=warning, 3=info, 4=debug, 5=trace)\n"
-              << "  -Uxxx BLE address/identifier of the device to connect to\n";
+              << "  -Uxxx BLE address/identifier of the device to connect to\n"
+              << "  -dxxx path to the telemetry history SQLite file\n";
 }
 
 constexpr const char* kDefaultConfigPath = "bms_bridge.conf";
@@ -30,10 +32,11 @@ constexpr const char* kDefaultConfigPath = "bms_bridge.conf";
 
 int main(int argc, char** argv) {
     std::string cli_uuid;
+    std::string cli_db_path;
     int cli_log_level = -1;
 
     int opt;
-    while ((opt = getopt(argc, argv, "D:U:h")) != -1) {
+    while ((opt = getopt(argc, argv, "D:U:d:h")) != -1) {
         switch (opt) {
             case 'D':
                 cli_log_level = std::atoi(optarg);
@@ -44,6 +47,9 @@ int main(int argc, char** argv) {
                 break;
             case 'U':
                 cli_uuid = optarg;
+                break;
+            case 'd':
+                cli_db_path = optarg;
                 break;
             case 'h':
             default:
@@ -62,8 +68,9 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    if (cli_log_level > 0) cfg.log_level = cli_log_level;
-    if (!cli_uuid.empty()) cfg.device_uuid = cli_uuid;
+    if (cli_log_level > 0)    cfg.log_level       = cli_log_level;
+    if (!cli_uuid.empty())    cfg.device_uuid     = cli_uuid;
+    if (!cli_db_path.empty()) cfg.history_db_path = cli_db_path;
 
     init_logger(cfg.log_level, cfg.log_file);
 
@@ -79,6 +86,8 @@ int main(int argc, char** argv) {
     SharedState state;
     BmsEventQueue queue;
     Dispatcher dispatcher;
+    History history(cfg.history_db_path,
+                    std::chrono::seconds(cfg.history_ram_window_s));
 
     BleClient::Settings ble_settings{
         cfg.device_uuid,
@@ -162,6 +171,8 @@ int main(int argc, char** argv) {
                                     }
                                 }
 
+                                history.append(std::chrono::system_clock::now(),
+                                               cells, pack);
                                 state.apply_telemetry(std::move(cells), std::move(pack));
                             }
                         } else if (*type == kJkFrameTypeDeviceInfo) {
@@ -206,13 +217,12 @@ int main(int argc, char** argv) {
         send_jk_request(kJkCmdDeviceInfo);
     });
 
+    inv.attach(dispatcher);
     ble.start();
-    inv.start();
 
     dispatcher.run();
 
     spdlog::info("bms_bridge stopping");
     ble.stop();
-    inv.stop();
     return EXIT_SUCCESS;
 }

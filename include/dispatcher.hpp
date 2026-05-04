@@ -19,6 +19,7 @@ public:
     Dispatcher& operator=(const Dispatcher&) = delete;
 
     void watch(int fd, Handler on_readable);
+    void unwatch(int fd);
 
     void add_timer(int period_ms, Handler on_tick);
 
