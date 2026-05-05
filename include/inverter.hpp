@@ -11,8 +11,7 @@ class Dispatcher;
 
 class Inverter {
 public:
-    Inverter(std::string device, int baud, uint8_t pylontech_address,
-             SharedState& state);
+    Inverter(std::string device, int baud, SharedState& state);
     ~Inverter();
 
     Inverter(const Inverter&) = delete;
@@ -35,7 +34,7 @@ private:
 
     std::string device_;
     int baud_ = 115200;
-    uint8_t pylontech_address_ = 2;
+    static constexpr uint8_t kBaseAddress = 2;
     SharedState& state_;
 
     std::vector<uint8_t> rx_buf_;

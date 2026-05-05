@@ -37,11 +37,9 @@ constexpr int    kReopenBackoffMs  = 5000;
 
 }
 
-Inverter::Inverter(std::string device, int baud, uint8_t pylontech_address,
-                   SharedState& state)
+Inverter::Inverter(std::string device, int baud, SharedState& state)
     : device_(std::move(device)),
       baud_(baud),
-      pylontech_address_(pylontech_address),
       state_(state) {}
 
 Inverter::~Inverter() {
@@ -138,9 +136,8 @@ void Inverter::process_buffer() {
         // the BMS-reported capacity.
         const uint8_t module_count =
             module_count_for_capacity(snap.pack->total_capacity_mah);
-        const uint8_t adr_lo = pylontech_address_;
-        const uint8_t adr_hi = static_cast<uint8_t>(pylontech_address_
-                                                    + module_count - 1);
+        const uint8_t adr_lo = kBaseAddress;
+        const uint8_t adr_hi = static_cast<uint8_t>(kBaseAddress + module_count - 1);
         if (f.adr < adr_lo || f.adr > adr_hi) {
             spdlog::debug("inverter: req CID2={:#04x} ADR={:#04x} (not us, ignored)",
                           f.cid2, f.adr);

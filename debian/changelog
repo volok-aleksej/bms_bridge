@@ -1,3 +1,14 @@
+bms-bridge (1.4.0) UNRELEASED; urgency=medium
+
+  * Refactor: BMS frame handling extracted from main() into BmsHandler class
+    with named methods (on_queue_event, on_poll_tick, on_settings_tick,
+    on_cell_info, on_device_info, on_settings_frame).
+  * Config: BLE UUIDs now optional with standard JK BMS defaults; pylontech
+    RS485 base address hardcoded to 2 (Pylontech convention); all optional
+    parameters commented out in the config template.
+
+ -- alexey <elenaluk89@gmail.com>  Mon, 05 May 2026 15:00:00 +0000
+
 bms-bridge (1.3.0) UNRELEASED; urgency=medium
 
   * HTTP server: fix evthread_use_pthreads for correct cross-thread shutdown;

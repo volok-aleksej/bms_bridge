@@ -9,9 +9,9 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         CFG_STR("device_uuid",         const_cast<char*>(""), CFGF_NONE),
         CFG_INT("log_level",           3, CFGF_NONE),
         CFG_STR("log_file",            const_cast<char*>(""), CFGF_NONE),
-        CFG_STR("service_uuid",        nullptr, CFGF_NODEFAULT),
-        CFG_STR("char_write_uuid",     nullptr, CFGF_NODEFAULT),
-        CFG_STR("char_notify_uuid",    nullptr, CFGF_NODEFAULT),
+        CFG_STR("service_uuid",     const_cast<char*>("0000ffe0-0000-1000-8000-00805f9b34fb"), CFGF_NONE),
+        CFG_STR("char_write_uuid",  const_cast<char*>("0000ffe1-0000-1000-8000-00805f9b34fb"), CFGF_NONE),
+        CFG_STR("char_notify_uuid", const_cast<char*>("0000ffe1-0000-1000-8000-00805f9b34fb"), CFGF_NONE),
         CFG_INT("scan_timeout_ms",     10000, CFGF_NONE),
         CFG_INT("adapter_poll_ms",     2000,  CFGF_NONE),
         CFG_INT("reconnect_backoff_ms",5000,  CFGF_NONE),
@@ -20,7 +20,6 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         CFG_INT("settings_refresh_period_ms", 60000, CFGF_NONE),
         CFG_STR("uart_device",         nullptr, CFGF_NODEFAULT),
         CFG_INT("uart_baud",           115200, CFGF_NONE),
-        CFG_INT("pylontech_address",      2, CFGF_NONE),
         CFG_STR("history_db_path",
                 const_cast<char*>("/var/lib/bms_bridge/history.sqlite3"),
                 CFGF_NONE),
@@ -64,7 +63,6 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
     out.settings_refresh_period_ms = static_cast<int>(cfg_getint(cfg, "settings_refresh_period_ms"));
     out.uart_device          = str_or_empty("uart_device");
     out.uart_baud            = static_cast<int>(cfg_getint(cfg, "uart_baud"));
-    out.pylontech_address    = static_cast<int>(cfg_getint(cfg, "pylontech_address"));
     out.history_db_path      = str_or_empty("history_db_path");
     out.history_ram_window_s = static_cast<int>(cfg_getint(cfg, "history_ram_window_s"));
     out.http_port            = static_cast<int>(cfg_getint(cfg, "http_port"));
@@ -79,10 +77,7 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         }
         return true;
     };
-    if (!require(out.service_uuid,     "service_uuid"))     return false;
-    if (!require(out.char_write_uuid,  "char_write_uuid"))  return false;
-    if (!require(out.char_notify_uuid, "char_notify_uuid")) return false;
-    if (!require(out.uart_device,      "uart_device"))      return false;
+    if (!require(out.uart_device, "uart_device")) return false;
 
     return true;
 }
