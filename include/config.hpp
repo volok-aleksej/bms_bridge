@@ -14,6 +14,7 @@ struct AppConfig {
     int adapter_poll_ms = 2000;
     int reconnect_backoff_ms = 5000;
     int bms_poll_period_ms = 5000;
+    int bms_state_update_interval_ms = 500;
     int settings_refresh_period_ms = 60000;
 
     std::string uart_device;
@@ -22,6 +23,9 @@ struct AppConfig {
 
     std::string history_db_path;
     int history_ram_window_s;
+
+    int         http_port;
+    std::string www_root;
 };
 
 bool load_config(const std::string& path, AppConfig& out, std::string& error);

@@ -3,6 +3,7 @@
 #include "dispatcher.hpp"
 #include "event_queue.hpp"
 #include "history.hpp"
+#include "http_server.hpp"
 #include "inverter.hpp"
 #include "jk_protocol.hpp"
 #include "logger.hpp"
@@ -88,6 +89,12 @@ int main(int argc, char** argv) {
     Dispatcher dispatcher;
     History history(cfg.history_db_path,
                     std::chrono::seconds(cfg.history_ram_window_s));
+    HttpServer http_server(history, static_cast<uint16_t>(cfg.http_port), cfg.www_root);
+
+    const auto history_interval      = std::chrono::milliseconds(cfg.bms_poll_period_ms);
+    const auto state_update_interval = std::chrono::milliseconds(cfg.bms_state_update_interval_ms);
+    auto last_history_write = std::chrono::steady_clock::time_point{};
+    auto last_state_update  = std::chrono::steady_clock::time_point{};
 
     BleClient::Settings ble_settings{
         cfg.device_uuid,
@@ -171,9 +178,16 @@ int main(int argc, char** argv) {
                                     }
                                 }
 
-                                history.append(std::chrono::system_clock::now(),
-                                               cells, pack);
-                                state.apply_telemetry(std::move(cells), std::move(pack));
+                                const auto now_steady = std::chrono::steady_clock::now();
+                                if (now_steady - last_history_write >= history_interval) {
+                                    history.append(std::chrono::system_clock::now(),
+                                                   cells, pack);
+                                    last_history_write = now_steady;
+                                }
+                                if (now_steady - last_state_update >= state_update_interval) {
+                                    state.apply_telemetry(std::move(cells), std::move(pack));
+                                    last_state_update = now_steady;
+                                }
                             }
                         } else if (*type == kJkFrameTypeDeviceInfo) {
                             JkDeviceInfo d;
@@ -219,10 +233,12 @@ int main(int argc, char** argv) {
 
     inv.attach(dispatcher);
     ble.start();
+    http_server.start();
 
     dispatcher.run();
 
     spdlog::info("bms_bridge stopping");
+    http_server.stop();
     ble.stop();
     return EXIT_SUCCESS;
 }

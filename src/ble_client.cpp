@@ -36,7 +36,8 @@ bool BleClient::send(const uint8_t* data, size_t len) {
         peripheral_->write_command(cfg_.service_uuid, cfg_.char_write_uuid, payload);
         return true;
     } catch (const std::exception& e) {
-        spdlog::warn("ble: write_command failed: {}", e.what());
+        spdlog::warn("ble: write_command failed: {} — forcing reconnect", e.what());
+        work_event_.signal();
         return false;
     }
 }

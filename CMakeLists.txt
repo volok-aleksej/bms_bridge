@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(bms_bridge
-    VERSION 1.1.0
+    VERSION 1.3.0
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -14,8 +14,10 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(CONFUSE REQUIRED IMPORTED_TARGET libconfuse)
-pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+pkg_check_modules(CONFUSE  REQUIRED IMPORTED_TARGET libconfuse)
+pkg_check_modules(SQLITE3  REQUIRED IMPORTED_TARGET sqlite3)
+pkg_check_modules(LIBEVENT          REQUIRED IMPORTED_TARGET libevent)
+pkg_check_modules(LIBEVENT_PTHREADS REQUIRED IMPORTED_TARGET libevent_pthreads)
 
 find_package(spdlog REQUIRED)
 find_package(Threads REQUIRED)
@@ -45,6 +47,10 @@ target_link_libraries(bms_core PUBLIC
     spdlog::spdlog
     Threads::Threads
 )
+target_link_libraries(bms_core PRIVATE
+    PkgConfig::LIBEVENT
+    PkgConfig::LIBEVENT_PTHREADS
+)
 # simpleble is referenced only from ble_client.cpp. Keeping it PRIVATE means
 # the test binary (which never pulls ble_client.o into its link) doesn't
 # need to link the BLE stack either.
@@ -61,6 +67,8 @@ install(TARGETS bms_bridge RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES config/bms_bridge.conf
         RENAME bms_bridge.conf.template
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/bms_bridge)
+install(DIRECTORY config/www/
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/bms_bridge/www)
 
 enable_testing()
 add_subdirectory(tests)

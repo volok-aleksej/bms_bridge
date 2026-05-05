@@ -15,7 +15,8 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         CFG_INT("scan_timeout_ms",     10000, CFGF_NONE),
         CFG_INT("adapter_poll_ms",     2000,  CFGF_NONE),
         CFG_INT("reconnect_backoff_ms",5000,  CFGF_NONE),
-        CFG_INT("bms_poll_period_ms",  5000,  CFGF_NONE),
+        CFG_INT("bms_poll_period_ms",         5000, CFGF_NONE),
+        CFG_INT("bms_state_update_interval_ms", 500, CFGF_NONE),
         CFG_INT("settings_refresh_period_ms", 60000, CFGF_NONE),
         CFG_STR("uart_device",         nullptr, CFGF_NODEFAULT),
         CFG_INT("uart_baud",           115200, CFGF_NONE),
@@ -24,6 +25,10 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
                 const_cast<char*>("/var/lib/bms_bridge/history.sqlite3"),
                 CFGF_NONE),
         CFG_INT("history_ram_window_s", 86400, CFGF_NONE),
+        CFG_INT("http_port",            80,   CFGF_NONE),
+        CFG_STR("www_root",
+                const_cast<char*>("/usr/share/bms_bridge/www"),
+                CFGF_NONE),
         CFG_END()
     };
 
@@ -54,13 +59,16 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
     out.scan_timeout_ms      = static_cast<int>(cfg_getint(cfg, "scan_timeout_ms"));
     out.adapter_poll_ms      = static_cast<int>(cfg_getint(cfg, "adapter_poll_ms"));
     out.reconnect_backoff_ms = static_cast<int>(cfg_getint(cfg, "reconnect_backoff_ms"));
-    out.bms_poll_period_ms   = static_cast<int>(cfg_getint(cfg, "bms_poll_period_ms"));
+    out.bms_poll_period_ms            = static_cast<int>(cfg_getint(cfg, "bms_poll_period_ms"));
+    out.bms_state_update_interval_ms  = static_cast<int>(cfg_getint(cfg, "bms_state_update_interval_ms"));
     out.settings_refresh_period_ms = static_cast<int>(cfg_getint(cfg, "settings_refresh_period_ms"));
     out.uart_device          = str_or_empty("uart_device");
     out.uart_baud            = static_cast<int>(cfg_getint(cfg, "uart_baud"));
     out.pylontech_address    = static_cast<int>(cfg_getint(cfg, "pylontech_address"));
     out.history_db_path      = str_or_empty("history_db_path");
     out.history_ram_window_s = static_cast<int>(cfg_getint(cfg, "history_ram_window_s"));
+    out.http_port            = static_cast<int>(cfg_getint(cfg, "http_port"));
+    out.www_root             = str_or_empty("www_root");
 
     cfg_free(cfg);
 

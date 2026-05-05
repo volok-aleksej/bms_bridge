@@ -202,7 +202,8 @@ std::vector<TelemetrySample> History::recent() const {
 
 std::vector<TelemetrySample> History::range(
         std::chrono::system_clock::time_point from,
-        std::chrono::system_clock::time_point to) const {
+        std::chrono::system_clock::time_point to,
+        int limit, int64_t step_ms) const {
     std::vector<TelemetrySample> out;
     if (!db_) return out;
 
@@ -211,6 +212,7 @@ std::vector<TelemetrySample> History::range(
     const auto to_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(
                             to.time_since_epoch()).count();
 
+    // Plain query (no decimation)
     constexpr const char* kSelectSamplesSql = R"sql(
         SELECT id, ts_ms, voltage_mv, current_ma, soc_pct,
                remaining_mah, total_mah, cycle_count,
@@ -219,7 +221,26 @@ std::vector<TelemetrySample> History::range(
                avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx
         FROM samples
         WHERE ts_ms >= ? AND ts_ms < ?
-        ORDER BY ts_ms ASC
+        ORDER BY ts_ms DESC
+        LIMIT ?
+    )sql";
+
+    // Decimated query: one record (newest) per time bucket of step_ms size
+    constexpr const char* kSelectDecimatedSql = R"sql(
+        SELECT s.id, s.ts_ms, s.voltage_mv, s.current_ma, s.soc_pct,
+               s.remaining_mah, s.total_mah, s.cycle_count,
+               s.temp1_dc, s.temp2_dc, s.mos_temp_dc,
+               s.flags, s.errors_bitmask,
+               s.avg_cell_mv, s.diff_cell_mv, s.max_cell_idx, s.min_cell_idx
+        FROM samples s
+        INNER JOIN (
+            SELECT MAX(ts_ms) AS ts_ms
+            FROM samples
+            WHERE ts_ms >= ? AND ts_ms < ?
+            GROUP BY (ts_ms - ?) / ?
+        ) b ON s.ts_ms = b.ts_ms
+        ORDER BY s.ts_ms DESC
+        LIMIT ?
     )sql";
     constexpr const char* kSelectCellsSql = R"sql(
         SELECT cell_idx, voltage_mv, resistance_uohm
@@ -230,7 +251,8 @@ std::vector<TelemetrySample> History::range(
 
     sqlite3_stmt* sst = nullptr;
     sqlite3_stmt* cst = nullptr;
-    if (sqlite3_prepare_v2(db_, kSelectSamplesSql, -1, &sst, nullptr) != SQLITE_OK) {
+    const char* sql = (step_ms > 0) ? kSelectDecimatedSql : kSelectSamplesSql;
+    if (sqlite3_prepare_v2(db_, sql, -1, &sst, nullptr) != SQLITE_OK) {
         spdlog::warn("history: prepare range/samples: {}", sqlite3_errmsg(db_));
         return out;
     }
@@ -240,8 +262,17 @@ std::vector<TelemetrySample> History::range(
         return out;
     }
 
-    sqlite3_bind_int64(sst, 1, static_cast<sqlite3_int64>(from_ms));
-    sqlite3_bind_int64(sst, 2, static_cast<sqlite3_int64>(to_ms));
+    if (step_ms > 0) {
+        sqlite3_bind_int64(sst, 1, static_cast<sqlite3_int64>(from_ms));
+        sqlite3_bind_int64(sst, 2, static_cast<sqlite3_int64>(to_ms));
+        sqlite3_bind_int64(sst, 3, static_cast<sqlite3_int64>(from_ms));
+        sqlite3_bind_int64(sst, 4, static_cast<sqlite3_int64>(step_ms));
+        sqlite3_bind_int  (sst, 5, limit > 0 ? limit : -1);
+    } else {
+        sqlite3_bind_int64(sst, 1, static_cast<sqlite3_int64>(from_ms));
+        sqlite3_bind_int64(sst, 2, static_cast<sqlite3_int64>(to_ms));
+        sqlite3_bind_int  (sst, 3, limit > 0 ? limit : -1);
+    }
 
     while (sqlite3_step(sst) == SQLITE_ROW) {
         TelemetrySample s;

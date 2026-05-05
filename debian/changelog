@@ -1,3 +1,27 @@
+bms-bridge (1.3.0) UNRELEASED; urgency=medium
+
+  * HTTP server: fix evthread_use_pthreads for correct cross-thread shutdown;
+    serve dashboard HTML from configurable www_root; server-side decimation
+    (step_ms = window/count) so any time window returns exactly count points;
+    stale pagination contexts evicted after 5 min.
+  * Dashboard: voltage, current, SoC and temperature charts, dark theme,
+    time-range selector (1h/6h/24h/7d), hover tooltip.
+  * Throttle history writes to once per bms_poll_period_ms and SharedState
+    updates to once per bms_state_update_interval_ms (default 500 ms) to
+    reduce dispatcher load from unsolicited JK BLE pushes (~2.4 fps).
+
+ -- alexey <elenaluk89@gmail.com>  Mon, 05 May 2026 14:00:00 +0000
+
+bms-bridge (1.2.0) UNRELEASED; urgency=medium
+
+  * HTTP server (default port 8080) serving a
+    placeholder HTML page at / and paginated telemetry history at
+    /history. Pagination via ?next&req_id=<uuid4>; time window and
+    record count are configurable per request (defaults: last 24 h,
+    100 records newest-first). http_port configurable in bms_bridge.conf.
+
+ -- alexey <elenaluk89@gmail.com>  Mon, 05 May 2026 12:00:00 +0000
+
 bms-bridge (1.1.0) UNRELEASED; urgency=medium
 
   * Telemetry history: every cell_info sample is appended to a SQLite

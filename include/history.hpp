@@ -37,10 +37,13 @@ public:
     // its own thread.
     std::vector<TelemetrySample> recent() const;
 
-    // Read samples from SQLite with ts in [from, to). Sorted ascending.
-    // Used for HTTP queries that span beyond the in-memory ring window.
+    // Read samples from SQLite with ts in [from, to), sorted newest-first.
+    // limit < 0 means no limit.
+    // step_ms > 0: return one record per time bucket of that size (decimation).
     std::vector<TelemetrySample> range(std::chrono::system_clock::time_point from,
-                                       std::chrono::system_clock::time_point to) const;
+                                       std::chrono::system_clock::time_point to,
+                                       int     limit   = -1,
+                                       int64_t step_ms = 0) const;
 
 private:
     void open_db();

@@ -1,2 +1,3 @@
 usr/bin/bms_bridge
 usr/share/bms_bridge/bms_bridge.conf.template
+usr/share/bms_bridge/www/index.html
