@@ -173,7 +173,7 @@ TEST(ParseCellInfo, ExtractsRealPackFieldsFromSniff) {
 
     EXPECT_TRUE(pack.charging_enabled);
     EXPECT_TRUE(pack.discharging_enabled);
-    EXPECT_FALSE(pack.balancer_enabled);
+    EXPECT_TRUE(pack.balancer_enabled);  // frame[140+telem_shift]=0x02 (discharging balancer)
 }
 
 // ---- parse_device_info ----------------------------------------------------

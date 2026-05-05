@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     Dispatcher     dispatcher;
     History        history(cfg.history_db_path,
                            std::chrono::seconds(cfg.history_ram_window_s));
-    HttpServer     http_server(history,
+    HttpServer     http_server(history, state,
                                static_cast<uint16_t>(cfg.http_port),
                                cfg.www_root);
 

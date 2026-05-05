@@ -94,14 +94,14 @@ void BmsHandler::on_cell_info(JkCellInfo cells, JkPackInfo pack) {
 
     if (auto prev = state_.snapshot(); prev.pack) {
         if (prev.pack->errors_bitmask != pack.errors_bitmask)
-            spdlog::warn("bms: errors_bitmask {:#06x} -> {:#06x}",
+            spdlog::info("bms: errors_bitmask {:#06x} -> {:#06x}",
                          prev.pack->errors_bitmask, pack.errors_bitmask);
         if (prev.pack->charging_enabled != pack.charging_enabled)
-            spdlog::warn("bms: charge MOSFET {} -> {}",
+            spdlog::info("bms: charge MOSFET {} -> {}",
                          prev.pack->charging_enabled ? "on" : "off",
                          pack.charging_enabled       ? "on" : "off");
         if (prev.pack->discharging_enabled != pack.discharging_enabled)
-            spdlog::warn("bms: discharge MOSFET {} -> {}",
+            spdlog::info("bms: discharge MOSFET {} -> {}",
                          prev.pack->discharging_enabled ? "on" : "off",
                          pack.discharging_enabled       ? "on" : "off");
     }

@@ -10,23 +10,24 @@ namespace {
 
 constexpr const char* kSchemaSql = R"sql(
 CREATE TABLE IF NOT EXISTS samples (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts_ms           INTEGER NOT NULL,
-    voltage_mv      INTEGER NOT NULL,
-    current_ma      INTEGER NOT NULL,
-    soc_pct         INTEGER NOT NULL,
-    remaining_mah   INTEGER NOT NULL,
-    total_mah       INTEGER NOT NULL,
-    cycle_count     INTEGER NOT NULL,
-    temp1_dc        INTEGER NOT NULL,
-    temp2_dc        INTEGER NOT NULL,
-    mos_temp_dc     INTEGER NOT NULL,
-    flags           INTEGER NOT NULL,
-    errors_bitmask  INTEGER NOT NULL,
-    avg_cell_mv     INTEGER NOT NULL,
-    diff_cell_mv    INTEGER NOT NULL,
-    max_cell_idx    INTEGER NOT NULL,
-    min_cell_idx    INTEGER NOT NULL
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_ms               INTEGER NOT NULL,
+    voltage_mv          INTEGER NOT NULL,
+    current_ma          INTEGER NOT NULL,
+    soc_pct             INTEGER NOT NULL,
+    remaining_mah       INTEGER NOT NULL,
+    total_mah           INTEGER NOT NULL,
+    cycle_count         INTEGER NOT NULL,
+    temp1_dc            INTEGER NOT NULL,
+    temp2_dc            INTEGER NOT NULL,
+    mos_temp_dc         INTEGER NOT NULL,
+    flags               INTEGER NOT NULL,
+    errors_bitmask      INTEGER NOT NULL,
+    avg_cell_mv         INTEGER NOT NULL,
+    diff_cell_mv        INTEGER NOT NULL,
+    max_cell_idx        INTEGER NOT NULL,
+    min_cell_idx        INTEGER NOT NULL,
+    balance_current_ma  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts_ms);
 
@@ -44,8 +45,8 @@ constexpr const char* kInsertSampleSql = R"sql(
 INSERT INTO samples (
     ts_ms, voltage_mv, current_ma, soc_pct, remaining_mah, total_mah,
     cycle_count, temp1_dc, temp2_dc, mos_temp_dc, flags, errors_bitmask,
-    avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx, balance_current_ma
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 )sql";
 
 constexpr const char* kInsertCellSql = R"sql(
@@ -101,6 +102,10 @@ void History::open_db() {
     exec("PRAGMA temp_store   = MEMORY");
     exec("PRAGMA foreign_keys = ON");
     exec(kSchemaSql);
+    // Migration: add column if DB was created before it existed
+    sqlite3_exec(db_,
+        "ALTER TABLE samples ADD COLUMN balance_current_ma INTEGER NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr); // ignore error if column already exists
 
     spdlog::info("history: opened {}", db_path_);
 }
@@ -160,6 +165,7 @@ void History::append(std::chrono::system_clock::time_point ts,
     sqlite3_bind_int  (insert_sample_stmt_, i++, cells.voltage_diff_mv);
     sqlite3_bind_int  (insert_sample_stmt_, i++, cells.max_voltage_cell_idx);
     sqlite3_bind_int  (insert_sample_stmt_, i++, cells.min_voltage_cell_idx);
+    sqlite3_bind_int  (insert_sample_stmt_, i++, pack.balance_current_ma);
 
     if (sqlite3_step(insert_sample_stmt_) != SQLITE_DONE) {
         spdlog::warn("history: insert sample failed: {}", sqlite3_errmsg(db_));
@@ -218,7 +224,8 @@ std::vector<TelemetrySample> History::range(
                remaining_mah, total_mah, cycle_count,
                temp1_dc, temp2_dc, mos_temp_dc,
                flags, errors_bitmask,
-               avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx
+               avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx,
+               balance_current_ma
         FROM samples
         WHERE ts_ms >= ? AND ts_ms < ?
         ORDER BY ts_ms DESC
@@ -231,7 +238,8 @@ std::vector<TelemetrySample> History::range(
                s.remaining_mah, s.total_mah, s.cycle_count,
                s.temp1_dc, s.temp2_dc, s.mos_temp_dc,
                s.flags, s.errors_bitmask,
-               s.avg_cell_mv, s.diff_cell_mv, s.max_cell_idx, s.min_cell_idx
+               s.avg_cell_mv, s.diff_cell_mv, s.max_cell_idx, s.min_cell_idx,
+               s.balance_current_ma
         FROM samples s
         INNER JOIN (
             SELECT MAX(ts_ms) AS ts_ms
@@ -295,6 +303,7 @@ std::vector<TelemetrySample> History::range(
         s.pack.discharging_enabled    = (flags & 0x2u) != 0;
         s.pack.balancer_enabled       = (flags & 0x4u) != 0;
         s.pack.errors_bitmask         = static_cast<uint16_t>(sqlite3_column_int(sst, 12));
+        s.pack.balance_current_ma     = static_cast<int16_t>(sqlite3_column_int(sst, 17));
         s.cells.average_voltage_mv    = static_cast<uint16_t>(sqlite3_column_int(sst, 13));
         s.cells.voltage_diff_mv       = static_cast<uint16_t>(sqlite3_column_int(sst, 14));
         s.cells.max_voltage_cell_idx  = static_cast<uint8_t>(sqlite3_column_int(sst, 15));

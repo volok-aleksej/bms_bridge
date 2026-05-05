@@ -11,9 +11,11 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <limits.h>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 
@@ -64,7 +66,8 @@ std::string sample_to_json(const TelemetrySample& s) {
       << ",\"mos_temp_dc\":" << s.pack.power_tube_temp_dC
       << ",\"charging\":"    << (s.pack.charging_enabled    ? "true" : "false")
       << ",\"discharging\":" << (s.pack.discharging_enabled ? "true" : "false")
-      << ",\"balancer\":"    << (s.pack.balancer_enabled    ? "true" : "false")
+      << ",\"balancer\":"          << (s.pack.balancer_enabled ? "true" : "false")
+      << ",\"balance_current_ma\":" << s.pack.balance_current_ma
       << ",\"errors\":"      << s.pack.errors_bitmask
       << ",\"avg_cell_mv\":" << s.cells.average_voltage_mv
       << ",\"diff_cell_mv\":" << s.cells.voltage_diff_mv
@@ -94,10 +97,30 @@ std::string history_json(const std::string& req_id,
     return o.str();
 }
 
+const char* mime_for_ext(const std::string& path) {
+    auto dot = path.rfind('.');
+    if (dot == std::string::npos) return "application/octet-stream";
+    std::string ext = path.substr(dot);
+    if (ext == ".html" || ext == ".htm") return "text/html; charset=utf-8";
+    if (ext == ".css")                   return "text/css";
+    if (ext == ".js")                    return "application/javascript";
+    if (ext == ".json")                  return "application/json";
+    if (ext == ".svg")                   return "image/svg+xml";
+    if (ext == ".png")                   return "image/png";
+    if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+    if (ext == ".ico")                   return "image/x-icon";
+    if (ext == ".woff")                  return "font/woff";
+    if (ext == ".woff2")                 return "font/woff2";
+    if (ext == ".ttf")                   return "font/ttf";
+    if (ext == ".txt")                   return "text/plain; charset=utf-8";
+    return "application/octet-stream";
+}
+
 } // namespace
 
-HttpServer::HttpServer(const History& history, uint16_t port, std::string www_root)
-    : history_(history), port_(port), www_root_(std::move(www_root)) {
+HttpServer::HttpServer(const History& history, const SharedState& state,
+                       uint16_t port, std::string www_root)
+    : history_(history), state_(state), port_(port), www_root_(std::move(www_root)) {
     evthread_use_pthreads();
     base_ = event_base_new();
     if (!base_) throw std::runtime_error("http: event_base_new failed");
@@ -145,29 +168,54 @@ void HttpServer::on_request(evhttp_request* req, void* arg) {
     std::string path_s = path ? path : "/";
     evhttp_uri_free(parsed);
 
-    if (path_s == "/") {
-        self->handle_root(req);
+    if (path_s == "/") path_s = "/index.html";
+
+    if (path_s == "/info") {
+        self->handle_info(req);
     } else if (path_s == "/history") {
         self->handle_history(req);
     } else {
-        evhttp_send_error(req, HTTP_NOTFOUND, "Not Found");
+        self->serve_file(req, path_s);
     }
 }
 
-void HttpServer::handle_root(evhttp_request* req) {
-    const std::string path = www_root_ + "/index.html";
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        spdlog::warn("http: cannot open {}", path);
-        evhttp_send_error(req, HTTP_NOTFOUND, "index.html not found");
+
+void HttpServer::serve_file(evhttp_request* req, const std::string& path) {
+    const std::string full = www_root_ + path;
+
+    char resolved[PATH_MAX];
+    if (!realpath(full.c_str(), resolved)) {
+        evhttp_send_error(req, HTTP_NOTFOUND, "Not Found");
         return;
     }
+
+    char root_resolved[PATH_MAX];
+    if (!realpath(www_root_.c_str(), root_resolved)) {
+        evhttp_send_error(req, HTTP_NOTFOUND, "Not Found");
+        return;
+    }
+
+    // Reject paths that escape www_root
+    const std::string root_s = std::string(root_resolved) + '/';
+    if (std::string(resolved).compare(0, root_s.size(), root_s) != 0) {
+        spdlog::warn("http: path traversal attempt: {}", path);
+        evhttp_send_error(req, HTTP_NOTFOUND, "Not Found");
+        return;
+    }
+
+    std::ifstream f(resolved, std::ios::binary);
+    if (!f) {
+        evhttp_send_error(req, HTTP_NOTFOUND, "Not Found");
+        return;
+    }
+
     std::string body((std::istreambuf_iterator<char>(f)),
                       std::istreambuf_iterator<char>());
+
     evbuffer* buf = evbuffer_new();
     evbuffer_add(buf, body.data(), body.size());
     evhttp_add_header(evhttp_request_get_output_headers(req),
-                      "Content-Type", "text/html; charset=utf-8");
+                      "Content-Type", mime_for_ext(resolved));
     evhttp_send_reply(req, HTTP_OK, "OK", buf);
     evbuffer_free(buf);
 }
@@ -211,6 +259,53 @@ void HttpServer::on_sweep(int, short, void* arg) {
             ++it;
         }
     }
+}
+
+void HttpServer::handle_info(evhttp_request* req) {
+    const auto snap = state_.snapshot();
+    if (!snap.settings) {
+        send_json(req, HTTP_NOTFOUND, "{\"error\":\"settings not yet received\"}");
+        return;
+    }
+    const JkSettings& s = *snap.settings;
+    std::ostringstream o;
+    o << "{"
+      << "\"cell_count\":"                << static_cast<int>(s.cell_count)
+      << ",\"nominal_capacity_mah\":"      << s.nominal_capacity_mah
+      << ",\"cell_uvp_mv\":"               << s.cell_uvp_mv
+      << ",\"cell_uvpr_mv\":"              << s.cell_uvpr_mv
+      << ",\"cell_ovp_mv\":"               << s.cell_ovp_mv
+      << ",\"cell_ovpr_mv\":"              << s.cell_ovpr_mv
+      << ",\"soc_100_mv\":"                << s.soc_100_mv
+      << ",\"soc_0_mv\":"                  << s.soc_0_mv
+      << ",\"balance_trigger_mv\":"        << s.balance_trigger_mv
+      << ",\"start_balance_mv\":"          << s.start_balance_mv
+      << ",\"max_charge_current_ma\":"     << s.max_charge_current_ma
+      << ",\"max_discharge_current_ma\":"  << s.max_discharge_current_ma
+      << ",\"max_balance_current_ma\":"    << s.max_balance_current_ma
+      << ",\"charge_ocp_delay_s\":"        << s.charge_ocp_delay_s
+      << ",\"charge_ocp_recovery_s\":"     << s.charge_ocp_recovery_s
+      << ",\"discharge_ocp_delay_s\":"     << s.discharge_ocp_delay_s
+      << ",\"discharge_ocp_recovery_s\":"  << s.discharge_ocp_recovery_s
+      << ",\"scp_delay_us\":"              << s.scp_delay_us
+      << ",\"scp_recovery_s\":"            << s.scp_recovery_s
+      << ",\"charge_otp_dC\":"             << s.charge_otp_dC
+      << ",\"charge_otp_recovery_dC\":"    << s.charge_otp_recovery_dC
+      << ",\"discharge_otp_dC\":"          << s.discharge_otp_dC
+      << ",\"discharge_otp_recovery_dC\":" << s.discharge_otp_recovery_dC
+      << ",\"charge_utp_dC\":"             << s.charge_utp_dC
+      << ",\"charge_utp_recovery_dC\":"    << s.charge_utp_recovery_dC
+      << ",\"mosfet_otp_dC\":"             << s.mosfet_otp_dC
+      << ",\"mosfet_otp_recovery_dC\":"    << s.mosfet_otp_recovery_dC
+      << ",\"smart_sleep_mv\":"            << s.smart_sleep_mv
+      << ",\"power_off_mv\":"              << s.power_off_mv
+      << ",\"request_charge_mv\":"         << s.request_charge_mv
+      << ",\"request_float_mv\":"          << s.request_float_mv
+      << ",\"charging_switch_on\":"        << (s.charging_switch_on    ? "true" : "false")
+      << ",\"discharging_switch_on\":"     << (s.discharging_switch_on ? "true" : "false")
+      << ",\"balancer_switch_on\":"        << (s.balancer_switch_on    ? "true" : "false")
+      << "}";
+    send_json(req, HTTP_OK, o.str());
 }
 
 void HttpServer::handle_history(evhttp_request* req) {

@@ -134,6 +134,7 @@ struct JkPackInfo {
     bool charging_enabled = false;              // charge MOSFET on
     bool discharging_enabled = false;           // discharge MOSFET on
     bool balancer_enabled = false;
+    int16_t  balance_current_ma = 0;           // 1 mA resolution
 
     uint16_t errors_bitmask = 0;
 };

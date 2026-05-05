@@ -198,7 +198,8 @@ bool parse_cell_info(const uint8_t* frame, size_t len,
 
     pack.charging_enabled    = frame[166 + telem_shift] != 0;
     pack.discharging_enabled = frame[167 + telem_shift] != 0;
-    pack.balancer_enabled    = frame[169 + telem_shift] != 0;
+    pack.balance_current_ma  = static_cast<int16_t>(le16(frame + 138 + telem_shift));
+    pack.balancer_enabled    = frame[140 + telem_shift] != 0;
 
     return true;
 }

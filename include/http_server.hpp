@@ -1,6 +1,7 @@
 #pragma once
 
 #include "history.hpp"
+#include "shared_state.hpp"
 #include "thread.hpp"
 
 #include <chrono>
@@ -15,7 +16,8 @@ struct event;
 
 class HttpServer : public Thread {
 public:
-    HttpServer(const History& history, uint16_t port, std::string www_root);
+    HttpServer(const History& history, const SharedState& state,
+               uint16_t port, std::string www_root);
     ~HttpServer() override;
 
     HttpServer(const HttpServer&) = delete;
@@ -35,8 +37,9 @@ private:
 
     static void on_request(struct evhttp_request* req, void* self);
     static void on_sweep(int, short, void* self);
-    void handle_root(struct evhttp_request* req);
+    void handle_info(struct evhttp_request* req);
     void handle_history(struct evhttp_request* req);
+    void serve_file(struct evhttp_request* req, const std::string& path);
     void handle_history_next(struct evhttp_request* req, const std::string& req_id);
     void handle_history_initial(struct evhttp_request* req,
                                 const struct evkeyvalq& params);
@@ -45,9 +48,10 @@ private:
 
     static std::string gen_uuid4();
 
-    const History& history_;
-    uint16_t       port_;
-    std::string    www_root_;
+    const History&     history_;
+    const SharedState& state_;
+    uint16_t           port_;
+    std::string        www_root_;
 
     event_base* base_     = nullptr;
     evhttp*     http_     = nullptr;

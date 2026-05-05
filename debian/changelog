@@ -1,3 +1,19 @@
+bms-bridge (1.5.0) stable; urgency=medium
+
+  * Dashboard: full rewrite with Alpine.js, three tabs (Realtime/Settings/History),
+    semi-circular gauges for voltage and current, SoC bar, live cell voltages grid,
+    auto-refresh every 500 ms, history auto-reload at one-point-interval cadence.
+  * HTTP: static file serving from www_root with MIME detection and path-traversal
+    protection; new `/info` endpoint returning JkSettings as JSON; `/` redirects to
+    index.html
+  * Protocol fix: balancer_enabled was read from wrong frame offset (169); corrected
+    to offset 140+telem_shift.
+  * New field: balance_current_ma parsed from frame offset 138+telem_shift, stored
+    in SQLite (migration), returned in /history JSON and shown in the Realtime
+    status strip.
+
+ -- alexey <elenaluk89@gmail.com>  Wed, 06 May 2026 00:00:00 +0000
+
 bms-bridge (1.4.0) UNRELEASED; urgency=medium
 
   * Refactor: BMS frame handling extracted from main() into BmsHandler class

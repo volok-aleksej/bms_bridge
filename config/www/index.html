@@ -1,254 +1,116 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BMS Bridge</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d0d1a;color:#bbb;font:13px/1.5 monospace}
-header{padding:10px 16px;border-bottom:1px solid #1e1e38;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-h1{color:#5b9bd5;font-size:15px}
-.btns button{background:#161628;border:1px solid #2a2a50;color:#777;padding:3px 11px;
-             cursor:pointer;border-radius:3px;font:inherit;margin-right:4px}
-.btns button:hover{background:#1e1e40;color:#bbb}
-.btns button.on{background:#1a3260;border-color:#3366bb;color:#66aaee}
-#st{color:#444;font-size:11px;margin-left:auto}
-.charts{padding:10px;display:flex;flex-direction:column;gap:10px}
-canvas{display:block}
-#tip{position:fixed;display:none;background:#11112a;border:1px solid #2a2a50;color:#ccc;
-     padding:5px 9px;border-radius:3px;font:11px monospace;pointer-events:none;z-index:99;line-height:1.8}
-</style>
+<link rel="stylesheet" href="style.css">
+<script defer src="alpine.min.js"></script>
 </head>
-<body>
+<body x-data="bms()" x-init="init()">
+
 <header>
-  <h1>&#9889; BMS Bridge</h1>
-  <div class="btns">
-    <button data-h="1">1ч</button>
-    <button data-h="6">6ч</button>
-    <button data-h="24" class="on">24ч</button>
-    <button data-h="168">7д</button>
-  </div>
-  <span id="st"></span>
+  <span class="logo">&#9889; BMS Bridge</span>
+  <nav class="tabs">
+    <button :class="{active: tab==='realtime'}" @click="tab='realtime'">Realtime</button>
+    <button :class="{active: tab==='settings'}" @click="tab='settings'">Settings</button>
+    <button :class="{active: tab==='history'}"  @click="tab='history'; loadHistory()">History</button>
+  </nav>
+  <span class="hdr-status" x-text="status"></span>
 </header>
-<div class="charts">
-  <canvas id="cv" height="200"></canvas>
-  <canvas id="cc" height="200"></canvas>
-  <canvas id="cs" height="160"></canvas>
-  <canvas id="ct" height="200"></canvas>
+
+<!-- ═══════════════════════ REALTIME ═══════════════════════ -->
+<div x-show="tab==='realtime'">
+
+  <div class="gauges-row">
+    <div class="gauge-wrap">
+      <canvas id="gauge-v" width="220" height="140"></canvas>
+      <div class="gauge-label">Voltage</div>
+      <div class="gauge-reading" x-text="live.voltage_mv ? (live.voltage_mv/1000).toFixed(2)+' V' : '—'"></div>
+    </div>
+    <div class="gauge-wrap">
+      <canvas id="gauge-i" width="220" height="140"></canvas>
+      <div class="gauge-label">Current</div>
+      <div class="gauge-reading"
+           :class="live.current_ma > 0 ? 'pos' : live.current_ma < 0 ? 'neg' : ''"
+           x-text="live.current_ma != null ? (live.current_ma>=0?'+':'')+(live.current_ma/1000).toFixed(2)+' A' : '—'"></div>
+    </div>
+    <div class="soc-wrap">
+      <div class="soc-label">SoC</div>
+      <div class="soc-bar-outer">
+        <div class="soc-bar-inner" :style="`width:${live.soc_pct||0}%`"></div>
+      </div>
+      <div class="soc-pct" x-text="live.soc_pct != null ? live.soc_pct+'%' : '—'"></div>
+      <div class="soc-cap" x-text="live.remaining_mah != null ? (live.remaining_mah/1000).toFixed(1)+' / '+(live.total_mah/1000).toFixed(1)+' Ah' : ''"></div>
+    </div>
+  </div>
+
+  <div class="status-strip">
+    <span class="flag" :class="live.charging    ? 'on':'off'" x-text="'Charge: '   +(live.charging    ?'ON':'OFF')"></span>
+    <span class="flag" :class="live.discharging ? 'on':'off'" x-text="'Discharge: '+(live.discharging ?'ON':'OFF')"></span>
+    <span class="flag" :class="live.balancer    ? 'on':'off'" x-text="'Balancer: ' +(live.balancer    ?'ON':'OFF')"></span>
+    <span class="muted" x-show="live.balancer" x-text="live.balance_current_ma != null ? (live.balance_current_ma/1000).toFixed(3)+' A' : ''"></span>
+    <span class="flag" :class="live.errors      ? 'err':'off'" x-text="'Errors: '  +(live.errors?'0x'+live.errors.toString(16).toUpperCase():'0')"></span>
+    <span class="sep"></span>
+    <span class="muted" x-text="live.temp1_dc   != null ? 'T1: '  +(live.temp1_dc/10).toFixed(1)+'°C' : ''"></span>
+    <span class="muted" x-text="live.temp2_dc   != null ? 'T2: '  +(live.temp2_dc/10).toFixed(1)+'°C' : ''"></span>
+    <span class="muted" x-text="live.mos_temp_dc!= null ? 'MOS: ' +(live.mos_temp_dc/10).toFixed(1)+'°C' : ''"></span>
+    <span class="sep"></span>
+    <span class="muted" x-text="live.avg_cell_mv  != null ? 'Avg: '+live.avg_cell_mv+' mV' : ''"></span>
+    <span class="muted" x-text="live.diff_cell_mv != null ? 'ΔU: ' +live.diff_cell_mv+' mV' : ''"></span>
+    <span class="sep"></span>
+    <span class="muted" x-text="live.cycle_count != null ? 'Cycles: '+live.cycle_count : ''"></span>
+  </div>
+
+  <div class="section-title">Cell Voltages</div>
+  <div class="cells-grid">
+    <template x-for="(mv, i) in live.cells_mv" :key="i">
+      <div class="cell-card" :class="cellClass(mv, i)">
+        <div class="cell-num"  x-text="String(i+1).padStart(2,'0')"></div>
+        <div class="cell-mv"   x-text="(mv/1000).toFixed(3)"></div>
+        <div class="cell-mohm" x-text="live.resistance_uohm && live.resistance_uohm[i] != null ? (live.resistance_uohm[i]/1000).toFixed(3)+' mΩ' : ''"></div>
+      </div>
+    </template>
+  </div>
+
 </div>
+
+<!-- ═══════════════════════ SETTINGS ═══════════════════════ -->
+<div x-show="tab==='settings'">
+  <div class="info-grid">
+    <template x-if="!info">
+      <div class="info-empty">No data received yet</div>
+    </template>
+    <template x-if="info">
+      <template x-for="row in infoRows()" :key="row[0]">
+        <div class="info-row">
+          <span class="ir-label" x-text="row[0]"></span>
+          <span class="ir-value" x-text="row[1]"></span>
+        </div>
+      </template>
+    </template>
+  </div>
+</div>
+
+<!-- ═══════════════════════ HISTORY ════════════════════════ -->
+<div x-show="tab==='history'">
+  <div class="history-toolbar">
+    <template x-for="h in [1,6,12,24,168]" :key="h">
+      <button :class="{on: histHours===h}" @click="histHours=h; loadHistory()"
+              x-text="h===1?'1h':h===6?'6h':h===12?'12h':h===24?'24h':'7d'"></button>
+    </template>
+    <span class="hdr-status" x-text="histStatus"></span>
+  </div>
+  <div class="charts">
+    <canvas id="cv" height="180"></canvas>
+    <canvas id="cc" height="180"></canvas>
+    <canvas id="cs" height="140"></canvas>
+    <canvas id="ct" height="180"></canvas>
+  </div>
+</div>
+
 <div id="tip"></div>
-<script>
-'use strict';
-const TIP = document.getElementById('tip');
 
-function p2(n) { return String(n).padStart(2, '0'); }
-
-function fmtTs(ts, span) {
-  const d = new Date(ts);
-  if (span <= 6 * 36e5)
-    return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
-  if (span <= 48 * 36e5)
-    return p2(d.getHours()) + ':' + p2(d.getMinutes());
-  return p2(d.getDate()) + '.' + p2(d.getMonth() + 1) + ' ' +
-         p2(d.getHours()) + ':' + p2(d.getMinutes());
-}
-
-function fmtFull(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-}
-
-function dsample(a, max) {
-  if (a.length <= max) return a;
-  const k = a.length / max;
-  return Array.from({length: max}, (_, i) => a[Math.round(i * k)]);
-}
-
-class Chart {
-  constructor(id, title, yfmt, tipFn) {
-    this.cv    = document.getElementById(id);
-    this.title = title;
-    this.yfmt  = yfmt;
-    this.tipFn = tipFn;
-    this.ss    = [];
-    this.m     = null;
-    new ResizeObserver(() => {
-      const w = this.cv.clientWidth;
-      if (this.cv.width !== w) { this.cv.width = w; this.draw(); }
-    }).observe(this.cv);
-    this.cv.addEventListener('mousemove',  e => this._tip(e));
-    this.cv.addEventListener('mouseleave', () => { TIP.style.display = 'none'; });
-  }
-
-  set(ss) { this.ss = ss; this.draw(); }
-
-  draw() {
-    const cv = this.cv, ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
-    const p = {t: 22, r: 14, b: 42, l: 64};
-    const cw = W - p.l - p.r, ch = H - p.t - p.b;
-    ctx.fillStyle = '#0d0d1a'; ctx.fillRect(0, 0, W, H);
-    if (!this.ss.length) return;
-
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const s of this.ss)
-      for (const pt of s.d) {
-        if (pt.x < x0) x0 = pt.x; if (pt.x > x1) x1 = pt.x;
-        if (pt.y < y0) y0 = pt.y; if (pt.y > y1) y1 = pt.y;
-      }
-    if (!isFinite(x0)) return;
-
-    const yr = y1 - y0 || 1; y0 -= yr * .04; y1 += yr * .04;
-    const tx = x => p.l + (x - x0) / (x1 - x0) * cw;
-    const ty = y => p.t + ch - (y - y0) / (y1 - y0) * ch;
-    const span = x1 - x0;
-
-    // Y grid + labels
-    ctx.font = '10px monospace';
-    for (let i = 0; i <= 4; i++) {
-      const y = y0 + (y1 - y0) * i / 4, py = ty(y);
-      ctx.strokeStyle = '#181830'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(p.l, py); ctx.lineTo(p.l + cw, py); ctx.stroke();
-      ctx.fillStyle = '#555'; ctx.textAlign = 'right';
-      ctx.fillText(this.yfmt(y), p.l - 3, py + 3);
-    }
-
-    // X grid + labels
-    const nx = Math.max(3, Math.floor(cw / 100));
-    for (let i = 0; i <= nx; i++) {
-      const x = x0 + (x1 - x0) * i / nx, px = tx(x);
-      ctx.strokeStyle = '#181830'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(px, p.t); ctx.lineTo(px, p.t + ch); ctx.stroke();
-      ctx.fillStyle = '#555'; ctx.textAlign = 'center';
-      ctx.fillText(fmtTs(x, span), px, p.t + ch + 14);
-    }
-
-    ctx.strokeStyle = '#222240'; ctx.lineWidth = 1;
-    ctx.strokeRect(p.l, p.t, cw, ch);
-
-    // Series lines
-    ctx.save(); ctx.beginPath(); ctx.rect(p.l, p.t, cw, ch); ctx.clip();
-    for (const s of this.ss) {
-      const pts = dsample(s.d, cw * 2);
-      ctx.beginPath(); ctx.strokeStyle = s.c; ctx.lineWidth = 1.5;
-      let first = true;
-      for (const pt of pts) {
-        const px = tx(pt.x), py = ty(pt.y);
-        if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // Title
-    ctx.fillStyle = '#888'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'left';
-    ctx.fillText(this.title, p.l, 15);
-
-    // Legend (skip for many series — cells)
-    if (this.ss.length <= 8) {
-      let lx = p.l + cw;
-      ctx.font = '10px monospace'; ctx.textAlign = 'right';
-      for (const s of [...this.ss].reverse()) {
-        const tw = ctx.measureText(s.n).width;
-        ctx.fillStyle = '#666'; ctx.fillText(s.n, lx, p.t + ch + 30);
-        lx -= tw + 3;
-        ctx.fillStyle = s.c; ctx.fillRect(lx, p.t + ch + 24, 10, 3);
-        lx -= 14;
-      }
-    }
-
-    this.m = {x0, x1, p, cw, ch};
-  }
-
-  _tip(e) {
-    if (!this.m || !this.ss.length) return;
-    const m = this.m, r = this.cv.getBoundingClientRect();
-    const mx = (e.clientX - r.left) * (this.cv.width / r.width);
-    const x  = m.x0 + (mx - m.p.l) / m.cw * (m.x1 - m.x0);
-    const ref = this.ss[0].d;
-    let bi = 0, bd = Infinity;
-    for (let i = 0; i < ref.length; i++) {
-      const d = Math.abs(ref[i].x - x);
-      if (d < bd) { bd = d; bi = i; }
-    }
-    const rows = this.tipFn
-      ? this.tipFn(this.ss, bi)
-      : this.ss.map(s =>
-          `<div><span style="color:${s.c}">&#9632;</span> ${s.n}: ${this.yfmt(s.d[bi]?.y ?? 0)}</div>`
-        ).join('');
-    TIP.innerHTML = '<div style="color:#444;font-size:10px">' + fmtFull(ref[bi].x) + '</div>' + rows;
-    TIP.style.display = 'block';
-    TIP.style.left = (e.clientX + 14) + 'px';
-    TIP.style.top  = (e.clientY - 10) + 'px';
-  }
-}
-
-// Value formatters
-const fV = v => (v / 1000).toFixed(3) + ' V';
-const fA = v => (v >= 0 ? '+' : '') + (v / 1000).toFixed(2) + ' A';
-const fP = v => v.toFixed(0) + ' %';
-const fT = v => (v / 10).toFixed(1) + ' °C';
-
-// Chart instances
-const CH = {
-  v: new Chart('cv', 'Напряжение пака', fV),
-  c: new Chart('cc', 'Ток  (+ заряд / − разряд)', fA),
-  s: new Chart('cs', 'SoC', fP),
-  t: new Chart('ct', 'Температура', fT),
-};
-
-// Load history data with auto-pagination
-async function loadData(hours) {
-  const now = Date.now(), t0 = now - hours * 36e5, per = 600;
-  const url = `/history?time_start=${Math.floor(t0 / 1e3)}&time_end=${Math.floor(now / 1e3)}&count=${per}`;
-  let r = await fetch(url), j = await r.json();
-  let all = [...j.data];
-  while (j.data.length === per) {
-    r = await fetch('/history?next&req_id=' + j.req_id);
-    if (!r.ok) break;
-    j = await r.json();
-    if (j.error || !j.data.length) break;
-    all = all.concat(j.data);
-  }
-  return all.reverse(); // server returns newest-first → reverse to chronological
-}
-
-// Populate all charts from loaded data
-function renderData(data) {
-  const mk = (fn, c, n) => ({d: data.map(d => ({x: d.ts, y: fn(d)})), c, n});
-  CH.v.set([mk(d => d.voltage_mv,   '#4fc3f7', 'U')]);
-  CH.c.set([mk(d => d.current_ma,   '#66bb6a', 'I')]);
-  CH.s.set([mk(d => d.soc_pct,      '#ffa726', 'SoC')]);
-  CH.t.set([
-    mk(d => d.temp1_dc,    '#ef5350', 'T1'),
-    mk(d => d.temp2_dc,    '#ec407a', 'T2'),
-    mk(d => d.mos_temp_dc, '#ff7043', 'MOS'),
-  ]);
-}
-
-async function reload(hours, btn) {
-  document.querySelectorAll('.btns button').forEach(b => b.classList.remove('on'));
-  btn.classList.add('on');
-  const st = document.getElementById('st');
-  st.textContent = 'загрузка…';
-  try {
-    const data = await loadData(hours);
-    if (!data.length) { st.textContent = 'нет данных'; return; }
-    renderData(data);
-    st.textContent = data.length + ' точек · ' + new Date().toLocaleTimeString();
-  } catch (err) {
-    st.textContent = 'ошибка: ' + err.message;
-  }
-}
-
-document.querySelectorAll('.btns button').forEach(b => {
-  b.addEventListener('click', () => reload(+b.dataset.h, b));
-});
-
-window.addEventListener('load', () => {
-  document.querySelectorAll('canvas').forEach(cv => { cv.width = cv.clientWidth || 1200; });
-  reload(24, document.querySelector('.btns button.on'));
-});
-</script>
+<script src="app.js"></script>
 </body>
 </html>
