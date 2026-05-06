@@ -178,8 +178,6 @@ class Chart {
     ctx.font = 'bold 11px monospace';
     for (let i = 0; i <= 4; i++) {
       const y = y0 + (y1 - y0) * i / 4, py = ty(y);
-      ctx.strokeStyle = '#eaeef2'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(p.l, py); ctx.lineTo(p.l + cw, py); ctx.stroke();
       ctx.fillStyle = '#1f2328'; ctx.textAlign = 'right';
       ctx.fillText(this.yfmt(y), p.l - 3, py + 3);
     }
@@ -199,10 +197,18 @@ class Chart {
     for (const s of this.ss) {
       const pts = dsample(s.d, cw * 2);
       ctx.beginPath(); ctx.strokeStyle = s.c; ctx.lineWidth = 1.5;
-      let first = true;
-      for (const pt of pts) {
-        first ? ctx.moveTo(tx(pt.x), ty(pt.y)) : ctx.lineTo(tx(pt.x), ty(pt.y));
-        first = false;
+      if (pts.length === 1) {
+        ctx.moveTo(tx(pts[0].x), ty(pts[0].y));
+      } else if (pts.length >= 2) {
+        ctx.moveTo(tx(pts[0].x), ty(pts[0].y));
+        for (let i = 1; i < pts.length - 1; i++) {
+          const cpx = tx(pts[i].x), cpy = ty(pts[i].y);
+          const ex  = tx((pts[i].x + pts[i+1].x) / 2);
+          const ey  = ty((pts[i].y + pts[i+1].y) / 2);
+          ctx.quadraticCurveTo(cpx, cpy, ex, ey);
+        }
+        const last = pts[pts.length - 1];
+        ctx.lineTo(tx(last.x), ty(last.y));
       }
       ctx.stroke();
     }
@@ -398,7 +404,8 @@ function bms() {
           if (j.error || !j.data.length) break;
           all = all.concat(j.data);
         }
-        all.reverse();
+        all = all.filter(d => d.ts >= t0 && d.ts <= now);
+        all.sort((a, b) => a.ts - b.ts);
 
         // wait for DOM to be visible so canvases have width
         await this.$nextTick();
