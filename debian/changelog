@@ -1,3 +1,11 @@
+bms-bridge (1.6.0) stable; urgency=medium
+
+  * HTTP pagination fix: probe query detects next page when decimation is active
+  * Fix JS fetch URL: ?next=1 instead of ?next (libevent ignores bare keys)
+  * JSON generation rewritten with cJSON instead of manual string building
+
+ -- alexey <elenaluk89@gmail.com>  Wed, 07 May 2026 00:00:00 +0000
+
 bms-bridge (1.5.0) stable; urgency=medium
 
   * Dashboard: full rewrite with Alpine.js, three tabs (Realtime/Settings/History),

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(bms_bridge
-    VERSION 1.5.0
+    VERSION 1.6.0
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -16,6 +16,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CONFUSE  REQUIRED IMPORTED_TARGET libconfuse)
 pkg_check_modules(SQLITE3  REQUIRED IMPORTED_TARGET sqlite3)
+pkg_check_modules(CJSON    REQUIRED IMPORTED_TARGET libcjson)
 pkg_check_modules(LIBEVENT          REQUIRED IMPORTED_TARGET libevent)
 pkg_check_modules(LIBEVENT_PTHREADS REQUIRED IMPORTED_TARGET libevent_pthreads)
 
@@ -48,6 +49,7 @@ target_link_libraries(bms_core PUBLIC
     Threads::Threads
 )
 target_link_libraries(bms_core PRIVATE
+    PkgConfig::CJSON
     PkgConfig::LIBEVENT
     PkgConfig::LIBEVENT_PTHREADS
 )

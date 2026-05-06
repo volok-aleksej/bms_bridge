@@ -398,14 +398,14 @@ function bms() {
         let r = await fetch(url), j = await r.json();
         let all = [...j.data];
         while (j.data.length === per) {
-          r = await fetch('/history?next&req_id=' + j.req_id);
+          r = await fetch('/history?next=1&req_id=' + j.req_id);
           if (!r.ok) break;
           j = await r.json();
           if (j.error || !j.data.length) break;
           all = all.concat(j.data);
         }
-        all = all.filter(d => d.ts >= t0 && d.ts <= now);
-        all.sort((a, b) => a.ts - b.ts);
+        // all = all.filter(d => d.ts >= t0 && d.ts <= now);
+        // all.sort((a, b) => a.ts - b.ts);
 
         // wait for DOM to be visible so canvases have width
         await this.$nextTick();

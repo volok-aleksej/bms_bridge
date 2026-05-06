@@ -6,14 +6,15 @@
 #include <event2/keyvalq_struct.h>
 #include <event2/thread.h>
 
+#include <cjson/cJSON.h>
 #include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <cstring>
 #include <fstream>
 #include <limits.h>
+#include <memory>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <stdlib.h>
 #include <string>
@@ -24,77 +25,70 @@ namespace {
 constexpr int kCtxTtlSec  = 300; // pagination context TTL: 5 minutes
 constexpr int kSweepSec   =  60; // sweep interval
 
-std::string json_str(const std::string& s) {
-    std::string o;
-    o.reserve(s.size() + 2);
-    o += '"';
-    for (unsigned char c : s) {
-        switch (c) {
-            case '"':  o += "\\\""; break;
-            case '\\': o += "\\\\"; break;
-            case '\n': o += "\\n";  break;
-            case '\r': o += "\\r";  break;
-            case '\t': o += "\\t";  break;
-            default:
-                if (c < 0x20) {
-                    char buf[8];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
-                    o += buf;
-                } else {
-                    o += static_cast<char>(c);
-                }
-        }
-    }
-    o += '"';
-    return o;
+// RAII wrapper: auto-deletes the cJSON tree on scope exit.
+struct CJsonPtr {
+    cJSON* p;
+    explicit CJsonPtr(cJSON* p) : p(p) {}
+    ~CJsonPtr() { cJSON_Delete(p); }
+    CJsonPtr(const CJsonPtr&) = delete;
+    CJsonPtr& operator=(const CJsonPtr&) = delete;
+};
+
+// Serialise cJSON object to std::string (unformatted) and free the raw buffer.
+std::string cjson_print(cJSON* obj) {
+    char* raw = cJSON_PrintUnformatted(obj);
+    if (!raw) return {};
+    std::string out(raw);
+    cJSON_free(raw);
+    return out;
 }
 
-std::string sample_to_json(const TelemetrySample& s) {
+cJSON* sample_to_cjson(const TelemetrySample& s) {
     const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               s.ts.time_since_epoch()).count();
-    std::ostringstream o;
-    o << "{"
-      << "\"ts\":"           << ts_ms
-      << ",\"voltage_mv\":"  << s.pack.voltage_mv
-      << ",\"current_ma\":"  << s.pack.current_ma
-      << ",\"soc_pct\":"     << static_cast<int>(s.pack.state_of_charge_pct)
-      << ",\"remaining_mah\":" << s.pack.remaining_capacity_mah
-      << ",\"total_mah\":"   << s.pack.total_capacity_mah
-      << ",\"cycle_count\":" << s.pack.cycle_count
-      << ",\"temp1_dc\":"    << s.pack.battery_temp1_dC
-      << ",\"temp2_dc\":"    << s.pack.battery_temp2_dC
-      << ",\"mos_temp_dc\":" << s.pack.power_tube_temp_dC
-      << ",\"charging\":"    << (s.pack.charging_enabled    ? "true" : "false")
-      << ",\"discharging\":" << (s.pack.discharging_enabled ? "true" : "false")
-      << ",\"balancer\":"          << (s.pack.balancer_enabled ? "true" : "false")
-      << ",\"balance_current_ma\":" << s.pack.balance_current_ma
-      << ",\"errors\":"      << s.pack.errors_bitmask
-      << ",\"avg_cell_mv\":" << s.cells.average_voltage_mv
-      << ",\"diff_cell_mv\":" << s.cells.voltage_diff_mv
-      << ",\"cells_mv\":[";
-    for (size_t i = 0; i < s.cells.voltages_mv.size(); ++i) {
-        if (i) o << ',';
-        o << s.cells.voltages_mv[i];
-    }
-    o << "],\"resistance_uohm\":[";
-    for (size_t i = 0; i < s.cells.resistance_uohm.size(); ++i) {
-        if (i) o << ',';
-        o << s.cells.resistance_uohm[i];
-    }
-    o << "]}";
-    return o.str();
+
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(obj, "ts",                (double)ts_ms);
+    cJSON_AddNumberToObject(obj, "voltage_mv",         s.pack.voltage_mv);
+    cJSON_AddNumberToObject(obj, "current_ma",         s.pack.current_ma);
+    cJSON_AddNumberToObject(obj, "soc_pct",            s.pack.state_of_charge_pct);
+    cJSON_AddNumberToObject(obj, "remaining_mah",      s.pack.remaining_capacity_mah);
+    cJSON_AddNumberToObject(obj, "total_mah",          s.pack.total_capacity_mah);
+    cJSON_AddNumberToObject(obj, "cycle_count",        s.pack.cycle_count);
+    cJSON_AddNumberToObject(obj, "temp1_dc",           s.pack.battery_temp1_dC);
+    cJSON_AddNumberToObject(obj, "temp2_dc",           s.pack.battery_temp2_dC);
+    cJSON_AddNumberToObject(obj, "mos_temp_dc",        s.pack.power_tube_temp_dC);
+    cJSON_AddBoolToObject  (obj, "charging",           s.pack.charging_enabled);
+    cJSON_AddBoolToObject  (obj, "discharging",        s.pack.discharging_enabled);
+    cJSON_AddBoolToObject  (obj, "balancer",           s.pack.balancer_enabled);
+    cJSON_AddNumberToObject(obj, "balance_current_ma", s.pack.balance_current_ma);
+    cJSON_AddNumberToObject(obj, "errors",             s.pack.errors_bitmask);
+    cJSON_AddNumberToObject(obj, "avg_cell_mv",        s.cells.average_voltage_mv);
+    cJSON_AddNumberToObject(obj, "diff_cell_mv",       s.cells.voltage_diff_mv);
+
+    cJSON* cells_mv = cJSON_CreateArray();
+    for (uint16_t v : s.cells.voltages_mv)
+        cJSON_AddItemToArray(cells_mv, cJSON_CreateNumber(v));
+    cJSON_AddItemToObject(obj, "cells_mv", cells_mv);
+
+    cJSON* res_uohm = cJSON_CreateArray();
+    for (uint16_t v : s.cells.resistance_uohm)
+        cJSON_AddItemToArray(res_uohm, cJSON_CreateNumber(v));
+    cJSON_AddItemToObject(obj, "resistance_uohm", res_uohm);
+
+    return obj;
 }
 
 std::string history_json(const std::string& req_id,
                          const std::vector<TelemetrySample>& data) {
-    std::ostringstream o;
-    o << "{\"req_id\":" << json_str(req_id) << ",\"data\":[";
-    for (size_t i = 0; i < data.size(); ++i) {
-        if (i) o << ',';
-        o << sample_to_json(data[i]);
-    }
-    o << "]}";
-    return o.str();
+    CJsonPtr root(cJSON_CreateObject());
+    cJSON_AddStringToObject(root.p, "req_id", req_id.c_str());
+
+    cJSON* arr = cJSON_AddArrayToObject(root.p, "data");
+    for (const auto& s : data)
+        cJSON_AddItemToArray(arr, sample_to_cjson(s));
+
+    return cjson_print(root.p);
 }
 
 const char* mime_for_ext(const std::string& path) {
@@ -268,44 +262,42 @@ void HttpServer::handle_info(evhttp_request* req) {
         return;
     }
     const JkSettings& s = *snap.settings;
-    std::ostringstream o;
-    o << "{"
-      << "\"cell_count\":"                << static_cast<int>(s.cell_count)
-      << ",\"nominal_capacity_mah\":"      << s.nominal_capacity_mah
-      << ",\"cell_uvp_mv\":"               << s.cell_uvp_mv
-      << ",\"cell_uvpr_mv\":"              << s.cell_uvpr_mv
-      << ",\"cell_ovp_mv\":"               << s.cell_ovp_mv
-      << ",\"cell_ovpr_mv\":"              << s.cell_ovpr_mv
-      << ",\"soc_100_mv\":"                << s.soc_100_mv
-      << ",\"soc_0_mv\":"                  << s.soc_0_mv
-      << ",\"balance_trigger_mv\":"        << s.balance_trigger_mv
-      << ",\"start_balance_mv\":"          << s.start_balance_mv
-      << ",\"max_charge_current_ma\":"     << s.max_charge_current_ma
-      << ",\"max_discharge_current_ma\":"  << s.max_discharge_current_ma
-      << ",\"max_balance_current_ma\":"    << s.max_balance_current_ma
-      << ",\"charge_ocp_delay_s\":"        << s.charge_ocp_delay_s
-      << ",\"charge_ocp_recovery_s\":"     << s.charge_ocp_recovery_s
-      << ",\"discharge_ocp_delay_s\":"     << s.discharge_ocp_delay_s
-      << ",\"discharge_ocp_recovery_s\":"  << s.discharge_ocp_recovery_s
-      << ",\"scp_delay_us\":"              << s.scp_delay_us
-      << ",\"scp_recovery_s\":"            << s.scp_recovery_s
-      << ",\"charge_otp_dC\":"             << s.charge_otp_dC
-      << ",\"charge_otp_recovery_dC\":"    << s.charge_otp_recovery_dC
-      << ",\"discharge_otp_dC\":"          << s.discharge_otp_dC
-      << ",\"discharge_otp_recovery_dC\":" << s.discharge_otp_recovery_dC
-      << ",\"charge_utp_dC\":"             << s.charge_utp_dC
-      << ",\"charge_utp_recovery_dC\":"    << s.charge_utp_recovery_dC
-      << ",\"mosfet_otp_dC\":"             << s.mosfet_otp_dC
-      << ",\"mosfet_otp_recovery_dC\":"    << s.mosfet_otp_recovery_dC
-      << ",\"smart_sleep_mv\":"            << s.smart_sleep_mv
-      << ",\"power_off_mv\":"              << s.power_off_mv
-      << ",\"request_charge_mv\":"         << s.request_charge_mv
-      << ",\"request_float_mv\":"          << s.request_float_mv
-      << ",\"charging_switch_on\":"        << (s.charging_switch_on    ? "true" : "false")
-      << ",\"discharging_switch_on\":"     << (s.discharging_switch_on ? "true" : "false")
-      << ",\"balancer_switch_on\":"        << (s.balancer_switch_on    ? "true" : "false")
-      << "}";
-    send_json(req, HTTP_OK, o.str());
+    CJsonPtr root(cJSON_CreateObject());
+    cJSON_AddNumberToObject(root.p, "cell_count",                s.cell_count);
+    cJSON_AddNumberToObject(root.p, "nominal_capacity_mah",      s.nominal_capacity_mah);
+    cJSON_AddNumberToObject(root.p, "cell_uvp_mv",               s.cell_uvp_mv);
+    cJSON_AddNumberToObject(root.p, "cell_uvpr_mv",              s.cell_uvpr_mv);
+    cJSON_AddNumberToObject(root.p, "cell_ovp_mv",               s.cell_ovp_mv);
+    cJSON_AddNumberToObject(root.p, "cell_ovpr_mv",              s.cell_ovpr_mv);
+    cJSON_AddNumberToObject(root.p, "soc_100_mv",                s.soc_100_mv);
+    cJSON_AddNumberToObject(root.p, "soc_0_mv",                  s.soc_0_mv);
+    cJSON_AddNumberToObject(root.p, "balance_trigger_mv",        s.balance_trigger_mv);
+    cJSON_AddNumberToObject(root.p, "start_balance_mv",          s.start_balance_mv);
+    cJSON_AddNumberToObject(root.p, "max_charge_current_ma",     s.max_charge_current_ma);
+    cJSON_AddNumberToObject(root.p, "max_discharge_current_ma",  s.max_discharge_current_ma);
+    cJSON_AddNumberToObject(root.p, "max_balance_current_ma",    s.max_balance_current_ma);
+    cJSON_AddNumberToObject(root.p, "charge_ocp_delay_s",        s.charge_ocp_delay_s);
+    cJSON_AddNumberToObject(root.p, "charge_ocp_recovery_s",     s.charge_ocp_recovery_s);
+    cJSON_AddNumberToObject(root.p, "discharge_ocp_delay_s",     s.discharge_ocp_delay_s);
+    cJSON_AddNumberToObject(root.p, "discharge_ocp_recovery_s",  s.discharge_ocp_recovery_s);
+    cJSON_AddNumberToObject(root.p, "scp_delay_us",              s.scp_delay_us);
+    cJSON_AddNumberToObject(root.p, "scp_recovery_s",            s.scp_recovery_s);
+    cJSON_AddNumberToObject(root.p, "charge_otp_dC",             s.charge_otp_dC);
+    cJSON_AddNumberToObject(root.p, "charge_otp_recovery_dC",    s.charge_otp_recovery_dC);
+    cJSON_AddNumberToObject(root.p, "discharge_otp_dC",          s.discharge_otp_dC);
+    cJSON_AddNumberToObject(root.p, "discharge_otp_recovery_dC", s.discharge_otp_recovery_dC);
+    cJSON_AddNumberToObject(root.p, "charge_utp_dC",             s.charge_utp_dC);
+    cJSON_AddNumberToObject(root.p, "charge_utp_recovery_dC",    s.charge_utp_recovery_dC);
+    cJSON_AddNumberToObject(root.p, "mosfet_otp_dC",             s.mosfet_otp_dC);
+    cJSON_AddNumberToObject(root.p, "mosfet_otp_recovery_dC",    s.mosfet_otp_recovery_dC);
+    cJSON_AddNumberToObject(root.p, "smart_sleep_mv",            s.smart_sleep_mv);
+    cJSON_AddNumberToObject(root.p, "power_off_mv",              s.power_off_mv);
+    cJSON_AddNumberToObject(root.p, "request_charge_mv",         s.request_charge_mv);
+    cJSON_AddNumberToObject(root.p, "request_float_mv",          s.request_float_mv);
+    cJSON_AddBoolToObject  (root.p, "charging_switch_on",        s.charging_switch_on);
+    cJSON_AddBoolToObject  (root.p, "discharging_switch_on",     s.discharging_switch_on);
+    cJSON_AddBoolToObject  (root.p, "balancer_switch_on",        s.balancer_switch_on);
+    send_json(req, HTTP_OK, cjson_print(root.p));
 }
 
 void HttpServer::handle_history(evhttp_request* req) {
@@ -348,13 +340,17 @@ void HttpServer::handle_history_next(evhttp_request* req,
     const auto win_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             ctx.time_end - ctx.time_start).count();
     const int64_t step_ms = (win_ms > 0 && ctx.count > 0) ? win_ms / ctx.count : 0;
-    auto data = history_.range(ctx.time_start, ctx.time_end, ctx.count + 1, step_ms);
+    auto data = history_.range(ctx.time_start, ctx.time_end, ctx.count, step_ms);
 
-    if (static_cast<int>(data.size()) > ctx.count) {
-        ctx.time_end    = data[ctx.count - 1].ts;
-        ctx.expires_at  = std::chrono::steady_clock::now()
-                          + std::chrono::seconds(kCtxTtlSec);
-        data.resize(ctx.count);
+    if (!data.empty()) {
+        const auto probe = history_.range(ctx.time_start, data.back().ts, 1, 0);
+        if (!probe.empty()) {
+            ctx.time_end   = data.back().ts;
+            ctx.expires_at = std::chrono::steady_clock::now()
+                             + std::chrono::seconds(kCtxTtlSec);
+        } else {
+            ctxs_.erase(it);
+        }
     } else {
         ctxs_.erase(it);
     }
@@ -387,14 +383,16 @@ void HttpServer::handle_history_initial(evhttp_request* req,
     const auto win_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             time_end - time_start).count();
     const int64_t step_ms = (win_ms > 0 && count > 0) ? win_ms / count : 0;
-    auto data = history_.range(time_start, time_end, count + 1, step_ms);
+    auto data = history_.range(time_start, time_end, count, step_ms);
     std::string req_id = gen_uuid4();
 
-    if (static_cast<int>(data.size()) > count) {
-        const auto expires = std::chrono::steady_clock::now()
-                             + std::chrono::seconds(kCtxTtlSec);
-        ctxs_[req_id] = PageCtx{time_start, data[count - 1].ts, count, expires};
-        data.resize(count);
+    if (!data.empty()) {
+        const auto probe = history_.range(time_start, data.back().ts, 1, 0);
+        if (!probe.empty()) {
+            const auto expires = std::chrono::steady_clock::now()
+                                 + std::chrono::seconds(kCtxTtlSec);
+            ctxs_[req_id] = PageCtx{time_start, data.back().ts, count, expires};
+        }
     }
 
     send_json(req, HTTP_OK, history_json(req_id, data));

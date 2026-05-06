@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -78,6 +79,83 @@ TEST(History, RangeWidensToSeeMoreSamples) {
 
         // Window covers all three → 3 records.
         EXPECT_EQ(h.range(today - hours(72), today + hours(1)).size(), 3u);
+    }
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path + "-wal"));
+    std::filesystem::remove(std::filesystem::path(path + "-shm"));
+}
+
+// Simulate the server-side pagination loop (handle_history_initial +
+// handle_history_next) directly against History::range(), without starting an
+// HTTP server.
+TEST(History, PaginationNoOverlap) {
+    using namespace std::chrono;
+
+    constexpr int kCount       = 150;    // records per page
+    constexpr int kRecords     = kCount * 2; // 2× ensures second page exists
+    constexpr int kIntervalSec = 300;
+
+    const std::string path = make_temp_db_path("pagination");
+    {
+        History h(path, hours(48));
+
+        const auto t_end   = system_clock::now();
+        const auto t_start = t_end - seconds(static_cast<long>(kRecords) * kIntervalSec);
+
+        for (int i = 0; i < kRecords; ++i)
+            h.append(t_start + seconds(static_cast<long>(i) * kIntervalSec),
+                     make_cells(), make_pack());
+
+        // — initial page —
+        const auto win_ms = duration_cast<milliseconds>(t_end - t_start).count();
+        const int64_t step_ms = win_ms / kCount;
+        auto data = h.range(t_start - seconds(1), t_end + seconds(1), kCount, step_ms);
+
+        ASSERT_EQ(static_cast<int>(data.size()), kCount)
+            << "initial page should be full";
+
+        int page = 1;
+        std::vector<int64_t> all_ts;
+        int64_t prev_oldest_ts = INT64_MAX;
+        auto time_start = t_start - seconds(1);
+
+        while (true) {
+            // timestamps strictly descending within a page
+            for (size_t i = 1; i < data.size(); ++i)
+                EXPECT_LT(data[i].ts, data[i - 1].ts)
+                    << "page " << page << ": not DESC at index " << i;
+
+            // newest record of this page is strictly older than oldest of previous page
+            if (page > 1) {
+                EXPECT_LT(data.front().ts.time_since_epoch().count(),
+                          prev_oldest_ts)
+                    << "page " << page << ": overlap with previous page";
+            }
+
+            // no duplicates
+            for (const auto& s : data) {
+                const auto ts = s.ts.time_since_epoch().count();
+                EXPECT_EQ(std::count(all_ts.begin(), all_ts.end(), ts), 0)
+                    << "duplicate ts on page " << page;
+                all_ts.push_back(ts);
+            }
+
+            prev_oldest_ts = data.back().ts.time_since_epoch().count();
+
+            // probe: is there anything older than the oldest record on this page?
+            auto probe = h.range(time_start, data.back().ts, 1, 0);
+            if (probe.empty()) break; // last page
+
+            // next page
+            auto time_end_next = data.back().ts;
+            const auto win_next = duration_cast<milliseconds>(
+                                      time_end_next - time_start).count();
+            const int64_t step_next = (win_next > 0 && kCount > 0) ? win_next / kCount : 0;
+            data = h.range(time_start, time_end_next, kCount, step_next);
+            ++page;
+        }
+
+        EXPECT_GT(page, 1) << "expected at least two pages";
     }
     std::filesystem::remove(path);
     std::filesystem::remove(std::filesystem::path(path + "-wal"));
