@@ -1,31 +1,9 @@
-bms-bridge (1.7.3) stable; urgency=medium
+bms-bridge (1.8.0) stable; urgency=medium
 
   * BLE scan coordinator: serialise the scan+connect phase across all BLE
     batteries sharing the one HCI adapter (FIFO slot, held only during
     scan/connect, released once the GATT connection is up or on backoff).
     No behaviour change with a single BLE battery.
-
- -- alexey <elenaluk89@gmail.com>  Mon, 18 May 2026 00:00:00 +0000
-
-bms-bridge (1.7.2) stable; urgency=medium
-
-  * Every configured battery (incl. reserve) gets a batteries-table row at
-    startup, so it has an id and appears in /batteries before any sample.
-  * /info: 404 if the battery is not in the config; reserve returns
-    config-derived settings (capacity, 0.5C charge/discharge limit,
-    SoC 100 %, current 0).
-  * Dashboard: reserve battery is selectable on Settings only (not
-    Realtime); selector is tab-aware.
-
- -- alexey <elenaluk89@gmail.com>  Mon, 18 May 2026 00:00:00 +0000
-
-bms-bridge (1.7.1) stable; urgency=medium
-
-  * /batteries is served from the DB (batteries table) and returns each
-    row id; dashboard requests /info and /history by battery id.
-  * History: name→id cache pre-filled from the DB at startup; lazy insert
-    on append unchanged. Read path takes the id directly (range_by_id),
-    no per-request name→id resolution.
 
  -- alexey <elenaluk89@gmail.com>  Mon, 18 May 2026 00:00:00 +0000
 
