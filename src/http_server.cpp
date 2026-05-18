@@ -1,5 +1,8 @@
 #include "http_server.hpp"
 
+#include "battery.hpp"
+#include "shared_state.hpp"
+
 #include <event2/buffer.h>
 #include <event2/event.h>
 #include <event2/http.h>
@@ -9,6 +12,7 @@
 #include <cjson/cJSON.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -22,10 +26,15 @@
 
 namespace {
 
-constexpr int kCtxTtlSec  = 300; // pagination context TTL: 5 minutes
-constexpr int kSweepSec   =  60; // sweep interval
+constexpr int kCtxTtlSec  = 300;
+constexpr int kSweepSec   =  60;
 
-// RAII wrapper: auto-deletes the cJSON tree on scope exit.
+// Battery ids found in the DB but not in the current config are pre-multi-
+// battery ("legacy") data. The old single-battery bridge was always a JK
+// BMS over BLE, so that is what those records actually are.
+constexpr const char* kLegacyLink     = "bluetooth";
+constexpr const char* kLegacyProtocol = "jk_bt";
+
 struct CJsonPtr {
     cJSON* p;
     explicit CJsonPtr(cJSON* p) : p(p) {}
@@ -34,7 +43,6 @@ struct CJsonPtr {
     CJsonPtr& operator=(const CJsonPtr&) = delete;
 };
 
-// Serialise cJSON object to std::string (unformatted) and free the raw buffer.
 std::string cjson_print(cJSON* obj) {
     char* raw = cJSON_PrintUnformatted(obj);
     if (!raw) return {};
@@ -112,9 +120,11 @@ const char* mime_for_ext(const std::string& path) {
 
 } // namespace
 
-HttpServer::HttpServer(const History& history, const SharedState& state,
+HttpServer::HttpServer(const History& history,
+                       const std::vector<std::unique_ptr<Battery>>& batteries,
                        uint16_t port, std::string www_root)
-    : history_(history), state_(state), port_(port), www_root_(std::move(www_root)) {
+    : history_(history), batteries_(batteries), port_(port),
+      www_root_(std::move(www_root)) {
     evthread_use_pthreads();
     base_ = event_base_new();
     if (!base_) throw std::runtime_error("http: event_base_new failed");
@@ -133,7 +143,7 @@ HttpServer::HttpServer(const History& history, const SharedState& state,
 }
 
 HttpServer::~HttpServer() {
-    stop(); // join thread before freeing libevent resources
+    stop();
     if (sweep_ev_) { event_free(sweep_ev_); sweep_ev_ = nullptr; }
     if (http_)     { evhttp_free(http_);    http_     = nullptr; }
     if (base_)     { event_base_free(base_); base_    = nullptr; }
@@ -166,6 +176,8 @@ void HttpServer::on_request(evhttp_request* req, void* arg) {
 
     if (path_s == "/info") {
         self->handle_info(req);
+    } else if (path_s == "/batteries") {
+        self->handle_batteries(req);
     } else if (path_s == "/history") {
         self->handle_history(req);
     } else {
@@ -189,7 +201,6 @@ void HttpServer::serve_file(evhttp_request* req, const std::string& path) {
         return;
     }
 
-    // Reject paths that escape www_root
     const std::string root_s = std::string(root_resolved) + '/';
     if (std::string(resolved).compare(0, root_s.size(), root_s) != 0) {
         spdlog::warn("http: path traversal attempt: {}", path);
@@ -255,8 +266,100 @@ void HttpServer::on_sweep(int, short, void* arg) {
     }
 }
 
+const SharedState* HttpServer::state_for(const std::string& battery_id) const {
+    for (const auto& b : batteries_)
+        if (b->name() == battery_id) return &b->state();
+    return nullptr;
+}
+
+int HttpServer::battery_param(evhttp_request* req) {
+    const char* uri = evhttp_request_get_uri(req);
+    int out = 0;
+    evhttp_uri* parsed = evhttp_uri_parse(uri);
+    const char* q = parsed ? evhttp_uri_get_query(parsed) : nullptr;
+    evkeyvalq params{};
+    if (q) evhttp_parse_query_str(q, &params);
+    if (const char* b = evhttp_find_header(&params, "battery")) out = std::atoi(b);
+    evhttp_clear_headers(&params);
+    if (parsed) evhttp_uri_free(parsed);
+    return out;
+}
+
+void HttpServer::handle_batteries(evhttp_request* req) {
+    CJsonPtr root(cJSON_CreateArray());
+
+    // The list is the `batteries` table (source of truth) .
+    // A configured battery only appears once
+    // it has its first sample (its row is lazily created on append);
+    // rows whose name is not in the current config are legacy/removed data.
+    for (const auto& ref : history_.battery_list()) {
+        const Battery* cfg = nullptr;
+        for (const auto& b : batteries_)
+            if (b->config().name == ref.name) { cfg = b.get(); break; }
+
+        cJSON* o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "id",        ref.id);
+        cJSON_AddStringToObject(o, "name",      ref.name.c_str());
+        if (cfg) {
+            const BatteryConfig& c = cfg->config();
+            cJSON_AddStringToObject(o, "link",      c.link_raw.c_str());
+            cJSON_AddStringToObject(o, "protocol",  c.protocol.c_str());
+            cJSON_AddBoolToObject  (o, "monitored", cfg->monitored());
+            cJSON_AddNumberToObject(o, "capacity",  c.capacity);
+            cJSON_AddBoolToObject  (o, "legacy",    false);
+        } else {
+            cJSON_AddStringToObject(o, "link",      kLegacyLink);
+            cJSON_AddStringToObject(o, "protocol",  kLegacyProtocol);
+            cJSON_AddBoolToObject  (o, "monitored", false);
+            cJSON_AddNumberToObject(o, "capacity",  0);
+            cJSON_AddBoolToObject  (o, "legacy",    true);
+        }
+        cJSON_AddItemToArray(root.p, o);
+    }
+
+    send_json(req, HTTP_OK, cjson_print(root.p));
+}
+
 void HttpServer::handle_info(evhttp_request* req) {
-    const auto snap = state_.snapshot();
+    const std::string name = history_.battery_name(battery_param(req));
+
+    const Battery* bat = nullptr;
+    for (const auto& b : batteries_)
+        if (b->config().name == name) { bat = b.get(); break; }
+
+    if (!bat) {
+        send_json(req, HTTP_NOTFOUND, "{\"error\":\"battery not in config\"}");
+        return;
+    }
+
+    // Reserve battery: no live BMS — its "settings" are what the bridge
+    // synthesises for the inverter from the config (own capacity, a 0.5C
+    // charge/discharge limit, SoC pinned at 100 %, zero current).
+    if (!bat->config().monitored()) {
+        const BatteryConfig& c = bat->config();
+        constexpr int kReserveCRateTenths = 5;  // 0.5C (matches inverter.cpp)
+        const uint32_t cap_mah  = static_cast<uint32_t>(c.capacity) * 1000;
+        const uint32_t limit_ma = static_cast<uint32_t>(c.capacity) * 1000
+                                  * kReserveCRateTenths / 10;
+        CJsonPtr ro(cJSON_CreateObject());
+        cJSON_AddBoolToObject  (ro.p, "reserve",                    true);
+        cJSON_AddStringToObject(ro.p, "mirror",                     c.mirror.c_str());
+        cJSON_AddNumberToObject(ro.p, "capacity_mah",               cap_mah);
+        cJSON_AddNumberToObject(ro.p, "charge_current_limit_ma",    limit_ma);
+        cJSON_AddNumberToObject(ro.p, "discharge_current_limit_ma", limit_ma);
+        cJSON_AddNumberToObject(ro.p, "soc_pct",                    100);
+        cJSON_AddNumberToObject(ro.p, "current_ma",                 0);
+        send_json(req, HTTP_OK, cjson_print(ro.p));
+        return;
+    }
+
+    const SharedState* st = state_for(name);
+    if (!st) {
+        send_json(req, HTTP_NOTFOUND,
+                  "{\"error\":\"no live data for this battery\"}");
+        return;
+    }
+    const auto snap = st->snapshot();
     if (!snap.settings) {
         send_json(req, HTTP_NOTFOUND, "{\"error\":\"settings not yet received\"}");
         return;
@@ -340,10 +443,12 @@ void HttpServer::handle_history_next(evhttp_request* req,
     const auto win_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             ctx.time_end - ctx.time_start).count();
     const int64_t step_ms = (win_ms > 0 && ctx.count > 0) ? win_ms / ctx.count : 0;
-    auto data = history_.range(ctx.time_start, ctx.time_end, ctx.count, step_ms);
+    auto data = history_.range_by_id(ctx.battery_id, ctx.time_start,
+                                     ctx.time_end, ctx.count, step_ms);
 
     if (!data.empty()) {
-        const auto probe = history_.range(ctx.time_start, data.back().ts, 1, 0);
+        const auto probe = history_.range_by_id(ctx.battery_id, ctx.time_start,
+                                                data.back().ts, 1, 0);
         if (!probe.empty()) {
             ctx.time_end   = data.back().ts;
             ctx.expires_at = std::chrono::steady_clock::now()
@@ -363,6 +468,8 @@ void HttpServer::handle_history_initial(evhttp_request* req,
     const char* ts_start_p = evhttp_find_header(&params, "time_start");
     const char* ts_end_p   = evhttp_find_header(&params, "time_end");
     const char* count_p    = evhttp_find_header(&params, "count");
+    const char* battery_p  = evhttp_find_header(&params, "battery");
+    const int   bid        = battery_p ? std::atoi(battery_p) : 0;
 
     const auto now = std::chrono::system_clock::now();
     auto time_start = now - std::chrono::hours(24);
@@ -383,15 +490,17 @@ void HttpServer::handle_history_initial(evhttp_request* req,
     const auto win_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             time_end - time_start).count();
     const int64_t step_ms = (win_ms > 0 && count > 0) ? win_ms / count : 0;
-    auto data = history_.range(time_start, time_end, count, step_ms);
+    auto data = history_.range_by_id(bid, time_start, time_end, count, step_ms);
     std::string req_id = gen_uuid4();
 
     if (!data.empty()) {
-        const auto probe = history_.range(time_start, data.back().ts, 1, 0);
+        const auto probe = history_.range_by_id(bid, time_start,
+                                                data.back().ts, 1, 0);
         if (!probe.empty()) {
             const auto expires = std::chrono::steady_clock::now()
                                  + std::chrono::seconds(kCtxTtlSec);
-            ctxs_[req_id] = PageCtx{time_start, data.back().ts, count, expires};
+            ctxs_[req_id] = PageCtx{bid, time_start, data.back().ts,
+                                    count, expires};
         }
     }
 

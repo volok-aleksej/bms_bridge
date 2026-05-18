@@ -36,6 +36,7 @@ protected:
 private:
     enum class State {
         WaitAdapter,
+        WaitSlot,
         Scan,
         Connect,
         Online,
@@ -49,8 +50,10 @@ private:
 
     void on_stop_event();
     void on_work_event();
+    void on_slot_event();
     void on_timer_expired();
 
+    void release_slot();
     bool probe_adapter();
     bool start_scan();
     void stop_scan();
@@ -67,6 +70,7 @@ private:
 
     Event stop_event_;
     Event work_event_;
+    Event slot_event_;
     Timer timer_;
 
     int   epoll_fd_         = -1;

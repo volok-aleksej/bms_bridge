@@ -49,6 +49,33 @@ header {
   white-space: nowrap;
 }
 
+/* ── Battery bar ─────────────────────────────────────────── */
+
+.batt-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #d0d7de;
+}
+
+.batt-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  color: #1f2328;
+  padding: 4px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+}
+.batt-chip:hover  { background: #eaeef2; }
+.batt-chip.active { background: #dbeafe; border-color: #0969da; color: #0969da; }
+
 /* ── Gauges row ──────────────────────────────────────────── */
 
 .gauges-row {
@@ -250,19 +277,8 @@ header {
 
 canvas { display: block; width: 100%; }
 
-/* ── Tooltip ─────────────────────────────────────────────── */
-
-#tip {
-  position: fixed;
-  display: none;
-  background: #ffffff;
-  border: 1px solid #d0d7de;
-  color: #1f2328;
-  padding: 6px 10px;
-  border-radius: 4px;
-  font: 11px monospace;
-  pointer-events: none;
-  z-index: 99;
-  line-height: 1.8;
-  box-shadow: 0 4px 12px rgba(0,0,0,.1);
+.chart-box {
+  position: relative;
+  height: 220px;
 }
+.chart-box.sm { height: 170px; }

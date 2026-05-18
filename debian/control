@@ -18,7 +18,8 @@ Package: bms-bridge
 Architecture: amd64
 Depends: ${shlibs:Depends},
          ${misc:Depends},
-         bluez
+         bluez,
+         sqlite3
 Description: BLE-to-RS485 bridge between a JK BMS and a Pylontech-speaking inverter
  bms_bridge connects to a JK BMS over Bluetooth Low Energy, parses the live
  cell / pack telemetry and the configured protection limits, then masquerades

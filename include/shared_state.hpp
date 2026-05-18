@@ -7,9 +7,6 @@
 #include <optional>
 
 // Snapshot of everything the BLE side has observed about the BMS so far.
-// cells and pack are filled together (they come from one cell_info frame and
-// share `updated_at`); settings is independent (it comes from a settings
-// frame, changes rarely, has no freshness deadline).
 struct BmsSnapshot {
     bool connected = false;
     std::optional<JkCellInfo> cells;

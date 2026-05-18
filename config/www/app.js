@@ -108,150 +108,119 @@ function _drawNeedle(ctx, cx, cy, r, angle) {
   ctx.fill();
 }
 
-// ── Chart ─────────────────────────────────────────────────────────────────────
+// ── Chart.js wrapper ──────────────────────────────────────────────────────────
+// The vendored Chart.js exposes a global `Chart`. It is resolved lazily inside
+// makeChart() (not at module load): app.js runs at end of <body>, before the
+// deferred chart.umd.min.js executes, so window.Chart is not yet defined here.
+// Nothing in this file declares a symbol named `Chart` itself (the old custom
+// chart class did, and it collided with the library global).
 
-const TIP = document.getElementById('tip');
+const AXIS_FONT = { family: 'monospace', size: 11, weight: 'bold' };
+const AXIS_CLR  = '#1f2328';
+const GRID_CLR  = '#eaeef2';
 
-function p2(n) { return String(n).padStart(2, '0'); }
-
-function fmtTs(ts, span) {
-  const d = new Date(ts);
-  if (span <= 6 * 36e5)
-    return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
-  if (span <= 48 * 36e5)
-    return p2(d.getHours()) + ':' + p2(d.getMinutes());
-  return p2(d.getDate()) + '.' + p2(d.getMonth() + 1) + ' ' +
-         p2(d.getHours()) + ':' + p2(d.getMinutes());
+// Format an epoch-ms x value for an axis tick; granularity depends on the
+// visible span (no date-adapter library — plain Date arithmetic).
+function fmtAxisTime(ms, spanMs) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  if (spanMs <= 6  * 3600e3)
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  if (spanMs <= 48 * 3600e3)
+    return p(d.getHours()) + ':' + p(d.getMinutes());
+  return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' +
+         p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
-function fmtFull(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+// Distinct colours assigned per battery (history charts draw one line per
+// battery). Cycles if there are more batteries than colours.
+const BATT_COLORS = ['#0969da', '#1a7f37', '#9a6700', '#8250df',
+                     '#cf222e', '#bc4c00', '#1b7c83', '#a40e26'];
+
+// Chart.js instances live OUTSIDE the Alpine component on purpose. A Chart
+// instance is a huge, deeply self-referential object (chart↔canvas↔ctx↔
+// scales↔chart); if it were stored on reactive component data, Alpine's
+// deep Proxy wrap would recurse forever → "Maximum call stack size
+// exceeded". This module-scoped holder is never seen by Alpine reactivity.
+let CHARTS = null;
+
+// Create an empty Chart.js line chart. Lines are (re)built later via
+// setSeries() so one chart can carry one line per battery.
+function makeChart(id, title, yfmt) {
+  const cv = document.getElementById(id);
+  if (!cv) return null;
+  const ChartJS = window.Chart; // resolved at call time (deferred script ran)
+  if (!ChartJS) { console.error('Chart.js not loaded'); return null; }
+  return new ChartJS(cv, {
+    type: 'line',
+    data: { datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      parsing: false,
+      normalized: true,
+      // 'nearest' (not 'index'): per-battery series are decimated
+      // independently and don't share x samples (legacy and the new
+      // battery don't even overlap in time), so index-matching would
+      // pair unrelated far-apart points and show a wrong tooltip time.
+      interaction: { mode: 'nearest', intersect: false, axis: 'x' },
+      elements: {
+        point: { radius: 0, hitRadius: 6 },
+        line:  { borderWidth: 1.5, tension: 0.25 },
+      },
+      plugins: {
+        title:  { display: true, text: title, align: 'start',
+                  color: AXIS_CLR, font: AXIS_FONT },
+        legend: { display: true,
+                  labels: { boxWidth: 12, boxHeight: 3,
+                            color: AXIS_CLR, font: AXIS_FONT } },
+        tooltip: {
+          titleFont: AXIS_FONT, bodyFont: AXIS_FONT,
+          callbacks: {
+            title: items => new Date(items[0].parsed.x).toLocaleString(),
+            label: ctx   => ctx.dataset.label + ': ' + yfmt(ctx.parsed.y),
+          },
+        },
+      },
+      scales: {
+        // Linear (numeric ms) x-axis with manual label formatting — avoids
+        // pulling in a Chart.js date adapter library.
+        x: {
+          type: 'linear',
+          bounds: 'data',
+          ticks: {
+            color: AXIS_CLR, font: AXIS_FONT,
+            maxRotation: 0, autoSkip: true, maxTicksLimit: 8,
+            callback(value, _i, ticks) {
+              const span = ticks.length
+                ? ticks[ticks.length - 1].value - ticks[0].value : 0;
+              return fmtAxisTime(value, span);
+            },
+          },
+          grid:  { color: GRID_CLR },
+        },
+        y: {
+          ticks: { color: AXIS_CLR, font: AXIS_FONT, callback: v => yfmt(v) },
+          grid:  { color: GRID_CLR },
+        },
+      },
+    },
+  });
 }
 
-function dsample(a, max) {
-  if (a.length <= max) return a;
-  const k = a.length / max;
-  return Array.from({length: max}, (_, i) => a[Math.round(i * k)]);
-}
-
-class Chart {
-  constructor(id, title, yfmt) {
-    this.cv    = document.getElementById(id);
-    this.title = title;
-    this.yfmt  = yfmt;
-    this.ss    = [];
-    this.m     = null;
-    if (!this.cv) return;
-    new ResizeObserver(() => {
-      const w = this.cv.clientWidth;
-      if (this.cv.width !== w) { this.cv.width = w; this.draw(); }
-    }).observe(this.cv);
-    this.cv.addEventListener('mousemove',  e => this._tip(e));
-    this.cv.addEventListener('mouseleave', () => { TIP.style.display = 'none'; });
-  }
-
-  set(ss) { this.ss = ss; this.draw(); }
-
-  draw() {
-    const cv = this.cv;
-    if (!cv) return;
-    const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
-    const p = {t: 22, r: 14, b: 42, l: 64};
-    const cw = W - p.l - p.r, ch = H - p.t - p.b;
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
-    if (!this.ss.length) return;
-
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const s of this.ss)
-      for (const pt of s.d) {
-        if (pt.x < x0) x0 = pt.x; if (pt.x > x1) x1 = pt.x;
-        if (pt.y < y0) y0 = pt.y; if (pt.y > y1) y1 = pt.y;
-      }
-    if (!isFinite(x0)) return;
-
-    const yr = y1 - y0 || 1; y0 -= yr * .05; y1 += yr * .05;
-    const tx = x => p.l + (x - x0) / (x1 - x0) * cw;
-    const ty = y => p.t + ch - (y - y0) / (y1 - y0) * ch;
-    const span = x1 - x0;
-
-    ctx.font = 'bold 11px monospace';
-    for (let i = 0; i <= 4; i++) {
-      const y = y0 + (y1 - y0) * i / 4, py = ty(y);
-      ctx.fillStyle = '#1f2328'; ctx.textAlign = 'right';
-      ctx.fillText(this.yfmt(y), p.l - 3, py + 3);
-    }
-    const nx = Math.max(3, Math.floor(cw / 100));
-    for (let i = 0; i <= nx; i++) {
-      const x = x0 + (x1 - x0) * i / nx, px = tx(x);
-      ctx.strokeStyle = '#eaeef2'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(px, p.t); ctx.lineTo(px, p.t + ch); ctx.stroke();
-      ctx.fillStyle = '#1f2328';
-      ctx.textAlign = i === 0 ? 'left' : i === nx ? 'right' : 'center';
-      ctx.fillText(fmtTs(x, span), px, p.t + ch + 14);
-    }
-    ctx.strokeStyle = '#d0d7de'; ctx.lineWidth = 1;
-    ctx.strokeRect(p.l, p.t, cw, ch);
-
-    ctx.save(); ctx.beginPath(); ctx.rect(p.l, p.t, cw, ch); ctx.clip();
-    for (const s of this.ss) {
-      const pts = dsample(s.d, cw * 2);
-      ctx.beginPath(); ctx.strokeStyle = s.c; ctx.lineWidth = 1.5;
-      if (pts.length === 1) {
-        ctx.moveTo(tx(pts[0].x), ty(pts[0].y));
-      } else if (pts.length >= 2) {
-        ctx.moveTo(tx(pts[0].x), ty(pts[0].y));
-        for (let i = 1; i < pts.length - 1; i++) {
-          const cpx = tx(pts[i].x), cpy = ty(pts[i].y);
-          const ex  = tx((pts[i].x + pts[i+1].x) / 2);
-          const ey  = ty((pts[i].y + pts[i+1].y) / 2);
-          ctx.quadraticCurveTo(cpx, cpy, ex, ey);
-        }
-        const last = pts[pts.length - 1];
-        ctx.lineTo(tx(last.x), ty(last.y));
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    ctx.fillStyle = '#1f2328'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'left';
-    ctx.fillText(this.title, p.l, 15);
-
-    if (this.ss.length <= 8) {
-      let lx = p.l + cw;
-      ctx.font = 'bold 11px monospace'; ctx.textAlign = 'right';
-      for (const s of [...this.ss].reverse()) {
-        const tw = ctx.measureText(s.n).width;
-        ctx.fillStyle = '#1f2328'; ctx.fillText(s.n, lx, p.t + ch + 26);
-        lx -= tw + 3;
-        ctx.fillStyle = s.c; ctx.fillRect(lx, p.t + ch + 32, 10, 3);
-        lx -= 14;
-      }
-    }
-    this.m = {x0, x1, p, cw, ch};
-  }
-
-  _tip(e) {
-    if (!this.m || !this.ss.length) return;
-    const m = this.m, r = this.cv.getBoundingClientRect();
-    const mx = (e.clientX - r.left) * (this.cv.width / r.width);
-    const x  = m.x0 + (mx - m.p.l) / m.cw * (m.x1 - m.x0);
-    const ref = this.ss[0].d;
-    let bi = 0, bd = Infinity;
-    for (let i = 0; i < ref.length; i++) {
-      const d = Math.abs(ref[i].x - x);
-      if (d < bd) { bd = d; bi = i; }
-    }
-    const rows = this.ss.map(s =>
-      `<div><span style="color:${s.c}">&#9632;</span> ${s.n}: ${this.yfmt(s.d[bi]?.y ?? 0)}</div>`
-    ).join('');
-    TIP.innerHTML = '<div style="color:#484f58;font-size:10px">' + fmtFull(ref[bi].x) + '</div>' + rows;
-    TIP.style.display = 'block';
-    const tipX = e.clientX > window.innerWidth / 2 ? e.clientX - TIP.offsetWidth - 14 : e.clientX + 14;
-    const tipY = Math.min(e.clientY - 10, window.innerHeight - TIP.offsetHeight - 10);
-    TIP.style.left = tipX + 'px';
-    TIP.style.top  = tipY + 'px';
-  }
+// Replace every line on a chart. `series` = [{ label, color, points }] where
+// points is [{x: tsMs, y}] already sorted ascending by x.
+function setSeries(chart, series) {
+  if (!chart) return;
+  chart.data.datasets = series.map(s => ({
+    label:           s.label,
+    borderColor:     s.color,
+    backgroundColor: s.color,
+    data:            s.points,
+    spanGaps:        true,
+  }));
+  chart.update('none');
 }
 
 // ── Info rows helper ──────────────────────────────────────────────────────────
@@ -312,14 +281,26 @@ function bms() {
     status:    'connecting…',
     histHours: 24,
     histStatus:'',
+    batteries: [],   // from /batteries; history draws one line per battery
+    battery:   0,    // selected batteries.id for Realtime/Settings
 
-    _charts: null,
     _vMin: 40, _vMax: 70,   // voltage gauge range (V)
     _iMin: -100, _iMax: 100, // current gauge range (A)
 
-    init() {
-      this._initCharts();
+    async init() {
+      // Charts are created lazily on the first History view: Chart.js v4
+      // throws "Cannot set properties of undefined (setting 'fullSize')"
+      // when built inside a display:none container (zero-size canvas).
+      await this._fetchBatteryList();
+      this._pickDefaultBattery();
       this._fetchInfo();
+      // The selectable set differs per tab (reserve only in Settings); if
+      // the current pick falls out of it on a tab switch, re-pick.
+      this.$watch('tab', () => {
+        const sel = this.selectableBatteries();
+        if (sel.length && !sel.some(b => b.id === this.battery))
+          this.selectBattery(sel[0].id);
+      });
       this._startLivePolling();
       this._histLastLoad = 0;
       setInterval(() => {
@@ -334,17 +315,44 @@ function bms() {
       const fA = v => (v >= 0 ? '+' : '') + (v / 1000).toFixed(2) + 'A';
       const fP = v => v.toFixed(0) + '%';
       const fT = v => (v / 10).toFixed(1) + '°C';
-      this._charts = {
-        v: new Chart('cv', 'Pack Voltage', fV),
-        c: new Chart('cc', 'Current  (+ charge / − discharge)', fA),
-        s: new Chart('cs', 'SoC', fP),
-        t: new Chart('ct', 'Temperature', fT),
+      CHARTS = {
+        v: makeChart('cv', 'Pack Voltage', fV),
+        c: makeChart('cc', 'Current  (+ charge / − discharge)', fA),
+        s: makeChart('cs', 'SoC', fP),
+        t: makeChart('ct', 'MOSFET Temperature', fT),
       };
+    },
+
+    // Default Realtime/Settings battery: first monitored, else first
+    // non-legacy, else whatever is first (legacy archive only).
+    // Batteries shown in the Realtime/Settings selector: monitored, non-
+    // legacy only. Reserve mirrors a sibling (no own telemetry) and legacy
+    // is history-only — neither has anything live to show here.
+    selectableBatteries() {
+      // Realtime: only real monitored batteries. Settings: also the
+      // reserve (its "settings" come from config). Legacy never.
+      const withReserve = this.tab === 'settings';
+      return this.batteries.filter(b =>
+        !b.legacy && (b.monitored || (withReserve && b.link === 'reserve')));
+    },
+
+    _pickDefaultBattery() {
+      const sel = this.selectableBatteries();
+      this.battery = sel.length ? sel[0].id : 0;
+    },
+
+    selectBattery(id) {
+      if (id === this.battery) return;
+      this.battery = id;
+      this.live = {};
+      this.info = null;
+      this._fetchInfo();
+      // History is battery-independent (all lines), no reload needed.
     },
 
     async _fetchInfo() {
       try {
-        const r = await fetch('/info');
+        const r = await fetch('/info?battery=' + this.battery);
         if (r.ok) this.info = await r.json();
       } catch (_) {}
     },
@@ -353,7 +361,8 @@ function bms() {
       const poll = async () => {
         try {
           const now = Math.floor(Date.now() / 1000);
-          const r = await fetch(`/history?time_start=${now - 10}&time_end=${now}&count=1`);
+          const q = '&battery=' + this.battery;
+          const r = await fetch(`/history?time_start=${now - 10}&time_end=${now}&count=1${q}`);
           if (!r.ok) throw new Error(r.status);
           const j = await r.json();
           if (j.data && j.data.length) {
@@ -389,40 +398,81 @@ function bms() {
       }
     },
 
+    async _fetchBatteryList() {
+      try {
+        const r = await fetch('/batteries');
+        if (r.ok) {
+          const list = await r.json();
+          if (Array.isArray(list)) this.batteries = list;
+        }
+      } catch (_) { /* old binary without /batteries: fall back to legacy */ }
+    },
+
+    // Paginated history fetch for one batteries.id (0 = no id → old binary
+    // ignores the param and returns its single battery). The server keeps
+    // the battery bound to req_id, so ?next needs no param.
+    async _fetchHistoryFor(id, t0s, t1s, per) {
+      const q = '&battery=' + id;
+      let r = await fetch(`/history?time_start=${t0s}&time_end=${t1s}&count=${per}${q}`);
+      let j = await r.json();
+      let all = [...j.data];
+      while (j.data.length === per) {
+        r = await fetch('/history?next=1&req_id=' + j.req_id);
+        if (!r.ok) break;
+        j = await r.json();
+        if (j.error || !j.data.length) break;
+        all = all.concat(j.data);
+      }
+      all.sort((a, b) => a.ts - b.ts); // Chart.js wants ascending x
+      return all;
+    },
+
     async loadHistory() {
       this.histStatus = 'loading…';
       this._histLastLoad = Date.now();
       try {
+        if (!this.batteries.length) await this._fetchBatteryList();
         const now = Date.now(), t0 = now - this.histHours * 36e5, per = 600;
-        const url = `/history?time_start=${Math.floor(t0/1e3)}&time_end=${Math.floor(now/1e3)}&count=${per}`;
-        let r = await fetch(url), j = await r.json();
-        let all = [...j.data];
-        while (j.data.length === per) {
-          r = await fetch('/history?next=1&req_id=' + j.req_id);
-          if (!r.ok) break;
-          j = await r.json();
-          if (j.error || !j.data.length) break;
-          all = all.concat(j.data);
+        const t0s = Math.floor(t0 / 1e3), t1s = Math.floor(now / 1e3);
+
+        // One line per battery in /batteries (that table IS the list, so
+        // every entry has an id). Reserve isn't there (no samples → no row);
+        // legacy is, with name "". When /batteries is unavailable (old
+        // binary) fall back to a single id-less query it will ignore.
+        const list = this.batteries.length
+          ? this.batteries
+          : [{ id: 0, name: '', legacy: true }];
+        const series = [];
+        let total = 0;
+        for (let i = 0; i < list.length; i++) {
+          const b = list[i];
+          const data = await this._fetchHistoryFor(b.id, t0s, t1s, per);
+          if (!data.length) continue;
+          const label = b.legacy || b.name === '' ? 'Архив' : b.name;
+          series.push({ label, color: BATT_COLORS[i % BATT_COLORS.length], data });
+          total += data.length;
         }
-        // all = all.filter(d => d.ts >= t0 && d.ts <= now);
-        // all.sort((a, b) => a.ts - b.ts);
 
-        // wait for DOM to be visible so canvases have width
+        // Wait for the History tab to actually be visible (Alpine applies
+        // x-show on the next tick), then create the charts in a sized
+        // container, or just resize them on subsequent loads.
         await this.$nextTick();
-        document.querySelectorAll('.charts canvas').forEach(cv => {
-          if (!cv.width || cv.width < 10) cv.width = cv.clientWidth || 800;
-        });
+        if (!CHARTS) this._initCharts();
+        Object.values(CHARTS).forEach(c => c && c.resize());
 
-        const mk = (fn, c, n) => ({d: all.map(d => ({x: d.ts, y: fn(d)})), c, n});
-        this._charts.v.set([mk(d => d.voltage_mv,  '#0969da', 'U')]);
-        this._charts.c.set([mk(d => d.current_ma,  '#1a7f37', 'I')]);
-        this._charts.s.set([mk(d => d.soc_pct,     '#9a6700', 'SoC')]);
-        this._charts.t.set([
-          mk(d => d.temp1_dc,     '#cf222e', 'T1'),
-          mk(d => d.temp2_dc,     '#8250df', 'T2'),
-          mk(d => d.mos_temp_dc,  '#bc4c00', 'MOS'),
-        ]);
-        this.histStatus = all.length + ' pts · ' + new Date().toLocaleTimeString();
+        const S = (chart, fn) => setSeries(chart, series.map(s => ({
+          label:  s.label,
+          color:  s.color,
+          points: s.data.map(d => ({ x: d.ts, y: fn(d) })),
+        })));
+        S(CHARTS.v, d => d.voltage_mv);
+        S(CHARTS.c, d => d.current_ma);
+        S(CHARTS.s, d => d.soc_pct);
+        S(CHARTS.t, d => d.mos_temp_dc); // one line per battery
+
+        this.histStatus = series.length
+          ? `${series.length} bat · ${total} pts · ${new Date().toLocaleTimeString()}`
+          : 'no data';
       } catch (e) {
         this.histStatus = 'error: ' + e.message;
       }
@@ -438,7 +488,19 @@ function bms() {
     },
 
     infoRows() {
-      return this.info ? buildInfoRows(this.info) : [];
+      const i = this.info;
+      if (!i) return [];
+      if (i.reserve) {
+        const fA = v => (v / 1000).toFixed(1) + ' A';
+        return [
+          ['Capacity',                (i.capacity_mah / 1000).toFixed(1) + ' Ah'],
+          ['Charge current limit',    fA(i.charge_current_limit_ma)],
+          ['Discharge current limit', fA(i.discharge_current_limit_ma)],
+          ['SoC (fixed)',             i.soc_pct + ' %'],
+          ['Current (fixed)',         fA(i.current_ma)],
+        ];
+      }
+      return buildInfoRows(i);
     },
   };
 }

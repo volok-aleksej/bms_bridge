@@ -10,6 +10,8 @@
 
 namespace {
 
+constexpr const char* kBat = "b1";
+
 JkCellInfo make_cells(uint8_t n = 4) {
     JkCellInfo c;
     c.voltages_mv.assign(n, 3300);
@@ -67,18 +69,18 @@ TEST(History, RangeWidensToSeeMoreSamples) {
         const auto cells = make_cells();
         const auto pack  = make_pack();
 
-        h.append(two_days_ago, cells, pack);
-        h.append(yesterday,    cells, pack);
-        h.append(today,        cells, pack);
+        h.append(kBat, two_days_ago, cells, pack);
+        h.append(kBat, yesterday,    cells, pack);
+        h.append(kBat, today,        cells, pack);
 
         // Window covers only "today" → 1 record.
-        EXPECT_EQ(h.range(today - hours(1), today + hours(1)).size(), 1u);
+        EXPECT_EQ(h.range(kBat, today - hours(1), today + hours(1)).size(), 1u);
 
         // Window covers yesterday and today → 2 records.
-        EXPECT_EQ(h.range(today - hours(25), today + hours(1)).size(), 2u);
+        EXPECT_EQ(h.range(kBat, today - hours(25), today + hours(1)).size(), 2u);
 
         // Window covers all three → 3 records.
-        EXPECT_EQ(h.range(today - hours(72), today + hours(1)).size(), 3u);
+        EXPECT_EQ(h.range(kBat, today - hours(72), today + hours(1)).size(), 3u);
     }
     std::filesystem::remove(path);
     std::filesystem::remove(std::filesystem::path(path + "-wal"));
@@ -103,13 +105,14 @@ TEST(History, PaginationNoOverlap) {
         const auto t_start = t_end - seconds(static_cast<long>(kRecords) * kIntervalSec);
 
         for (int i = 0; i < kRecords; ++i)
-            h.append(t_start + seconds(static_cast<long>(i) * kIntervalSec),
+            h.append(kBat, t_start + seconds(static_cast<long>(i) * kIntervalSec),
                      make_cells(), make_pack());
 
         // — initial page —
         const auto win_ms = duration_cast<milliseconds>(t_end - t_start).count();
         const int64_t step_ms = win_ms / kCount;
-        auto data = h.range(t_start - seconds(1), t_end + seconds(1), kCount, step_ms);
+        auto data = h.range(kBat, t_start - seconds(1), t_end + seconds(1),
+                            kCount, step_ms);
 
         ASSERT_EQ(static_cast<int>(data.size()), kCount)
             << "initial page should be full";
@@ -143,7 +146,7 @@ TEST(History, PaginationNoOverlap) {
             prev_oldest_ts = data.back().ts.time_since_epoch().count();
 
             // probe: is there anything older than the oldest record on this page?
-            auto probe = h.range(time_start, data.back().ts, 1, 0);
+            auto probe = h.range(kBat, time_start, data.back().ts, 1, 0);
             if (probe.empty()) break; // last page
 
             // next page
@@ -151,7 +154,7 @@ TEST(History, PaginationNoOverlap) {
             const auto win_next = duration_cast<milliseconds>(
                                       time_end_next - time_start).count();
             const int64_t step_next = (win_next > 0 && kCount > 0) ? win_next / kCount : 0;
-            data = h.range(time_start, time_end_next, kCount, step_next);
+            data = h.range(kBat, time_start, time_end_next, kCount, step_next);
             ++page;
         }
 
@@ -178,9 +181,9 @@ TEST(History, RangePreservesCellArrays) {
         c.max_voltage_cell_idx = 3;
         c.min_voltage_cell_idx = 0;
 
-        h.append(t, c, make_pack());
+        h.append(kBat, t, c, make_pack());
 
-        const auto rows = h.range(t - hours(1), t + hours(1));
+        const auto rows = h.range(kBat, t - hours(1), t + hours(1));
         ASSERT_EQ(rows.size(), 1u);
         EXPECT_EQ(rows[0].cells.voltages_mv,     c.voltages_mv);
         EXPECT_EQ(rows[0].cells.resistance_uohm, c.resistance_uohm);

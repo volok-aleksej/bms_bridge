@@ -1,29 +1,29 @@
-#include "ble_client.hpp"
-#include "bms_handler.hpp"
+#include "battery.hpp"
 #include "config.hpp"
 #include "dispatcher.hpp"
-#include "event_queue.hpp"
 #include "history.hpp"
 #include "http_server.hpp"
 #include "inverter.hpp"
 #include "logger.hpp"
-#include "shared_state.hpp"
 
 #include <spdlog/spdlog.h>
 
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
 void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " [-D level] [-U device_uuid] [-d db_path]\n"
-              << "  -Dx   log verbosity 1..5 (1=error, 2=warning, 3=info, 4=debug, 5=trace)\n"
-              << "  -Uxxx BLE address/identifier of the device to connect to\n"
-              << "  -dxxx path to the telemetry history SQLite file\n";
+    std::cerr << "Usage: " << prog << " [-D level] [-d db_path]\n"
+              << "  -Dx   log verbosity 1..5 (1=error 2=warning 3=info "
+                 "4=debug 5=trace)\n"
+              << "  -dxxx override the telemetry history SQLite path\n";
 }
 
 constexpr const char* kDefaultConfigPath = "bms_bridge.conf";
@@ -31,12 +31,11 @@ constexpr const char* kDefaultConfigPath = "bms_bridge.conf";
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string cli_uuid;
     std::string cli_db_path;
     int cli_log_level = -1;
 
     int opt;
-    while ((opt = getopt(argc, argv, "D:U:d:h")) != -1) {
+    while ((opt = getopt(argc, argv, "D:d:h")) != -1) {
         switch (opt) {
             case 'D':
                 cli_log_level = std::atoi(optarg);
@@ -45,7 +44,6 @@ int main(int argc, char** argv) {
                     return EXIT_FAILURE;
                 }
                 break;
-            case 'U': cli_uuid    = optarg; break;
             case 'd': cli_db_path = optarg; break;
             case 'h':
             default:
@@ -65,59 +63,44 @@ int main(int argc, char** argv) {
     }
 
     if (cli_log_level > 0)    cfg.log_level       = cli_log_level;
-    if (!cli_uuid.empty())    cfg.device_uuid     = cli_uuid;
-    if (!cli_db_path.empty()) cfg.history_db_path = cli_db_path;
+    if (!cli_db_path.empty()) cfg.history.db_path = cli_db_path;
 
     init_logger(cfg.log_level, cfg.log_file);
 
-    if (cfg.device_uuid.empty() || cfg.device_uuid == "00:00:00:00:00:00") {
-        spdlog::critical("device uuid is not configured (use -U or set device_uuid in config)");
-        return EXIT_FAILURE;
-    }
+    spdlog::info("bms_bridge starting; {} batteries, inverter uart={}@{}",
+                 cfg.batteries.size(), cfg.inverter.uart_device,
+                 cfg.inverter.uart_baud);
 
-    spdlog::info("bms_bridge starting; bms={} uart={}@{}",
-                 cfg.device_uuid, cfg.uart_device, cfg.uart_baud);
+    History    history(cfg.history.db_path,
+                       std::chrono::seconds(cfg.history.ram_window_s));
+    Dispatcher dispatcher;
 
-    SharedState    state;
-    BmsEventQueue  queue;
-    Dispatcher     dispatcher;
-    History        history(cfg.history_db_path,
-                           std::chrono::seconds(cfg.history_ram_window_s));
-    HttpServer     http_server(history, state,
-                               static_cast<uint16_t>(cfg.http_port),
-                               cfg.www_root);
+    std::vector<std::unique_ptr<Battery>> batteries;
+    batteries.reserve(cfg.batteries.size());
+    for (auto& bc : cfg.batteries)
+        batteries.push_back(std::make_unique<Battery>(bc));
 
-    BleClient::Settings ble_settings{
-        cfg.device_uuid,
-        cfg.service_uuid,
-        cfg.char_write_uuid,
-        cfg.char_notify_uuid,
-        cfg.scan_timeout_ms,
-        cfg.adapter_poll_ms,
-        cfg.reconnect_backoff_ms,
-    };
-    BleClient ble(ble_settings, queue);
-    Inverter  inv(cfg.uart_device, cfg.uart_baud, state);
+    // Every configured battery physically exists, so it must have a row in
+    // the batteries table (hence an id, hence appear in /batteries) even
+    // before its first sample — a reserve battery never appends at all.
+    for (const auto& bc : cfg.batteries)
+        history.ensure_battery_id(bc.name);
 
-    BmsHandler bms(ble, queue, state, history,
-                   std::chrono::milliseconds(cfg.bms_poll_period_ms),
-                   std::chrono::milliseconds(cfg.bms_state_update_interval_ms));
+    for (auto& b : batteries)
+        b->start(dispatcher, history);
 
-    dispatcher.watch(queue.notify_fd(),
-                     [&bms] { bms.on_queue_event(); });
-    dispatcher.add_timer(cfg.bms_poll_period_ms,
-                         [&bms] { bms.on_poll_tick(); });
-    dispatcher.add_timer(cfg.settings_refresh_period_ms,
-                         [&bms] { bms.on_settings_tick(); });
-
+    Inverter inv(cfg.inverter.uart_device, cfg.inverter.uart_baud, batteries);
     inv.attach(dispatcher);
-    ble.start();
+
+    HttpServer http_server(history, batteries,
+                           cfg.http.http_port, cfg.http.www_root);
     http_server.start();
 
     dispatcher.run();
 
     spdlog::info("bms_bridge stopping");
     http_server.stop();
-    ble.stop();
+    for (auto& b : batteries)
+        b->stop();
     return EXIT_SUCCESS;
 }

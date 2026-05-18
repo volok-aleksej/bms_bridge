@@ -1,5 +1,7 @@
 #include "ble_client.hpp"
 
+#include "ble_scan_coordinator.hpp"
+
 #include <spdlog/spdlog.h>
 
 #include <sys/epoll.h>
@@ -167,7 +169,7 @@ void BleClient::enter(State s) {
         case State::WaitAdapter:
             if (probe_adapter()) {
                 adapter_warned_ = false;
-                enter(State::Scan);
+                enter(State::WaitSlot);
             } else {
                 if (!adapter_warned_) {
                     spdlog::warn("ble: no Bluetooth adapter, retrying every {} ms",
@@ -176,6 +178,11 @@ void BleClient::enter(State s) {
                 }
                 timer_.arm(std::chrono::milliseconds(cfg_.adapter_poll_ms));
             }
+            break;
+
+        case State::WaitSlot:
+            BleScanCoordinator::instance().request(
+                this, [this] { slot_event_.signal(); });
             break;
 
         case State::Scan:
@@ -197,10 +204,12 @@ void BleClient::enter(State s) {
             break;
 
         case State::Online:
+            release_slot();
             work_event_.consume();
             break;
 
         case State::Backoff:
+            release_slot();
             timer_.arm(std::chrono::milliseconds(cfg_.reconnect_backoff_ms));
             break;
 
@@ -210,8 +219,17 @@ void BleClient::enter(State s) {
     }
 }
 
+void BleClient::release_slot() {
+    BleScanCoordinator::instance().release(this);
+}
+
+void BleClient::on_slot_event() {
+    if (state_ == State::WaitSlot) enter(State::Scan);
+}
+
 void BleClient::on_stop_event() {
     teardown_peripheral();
+    release_slot();
     state_ = State::Stopping;
 }
 
@@ -254,7 +272,7 @@ void BleClient::on_timer_expired() {
             enter(State::Backoff);
             break;
         case State::Backoff:
-            enter(adapter_ ? State::Scan : State::WaitAdapter);
+            enter(adapter_ ? State::WaitSlot : State::WaitAdapter);
             break;
         default:
             break;
@@ -277,13 +295,14 @@ void BleClient::run() {
     };
     add(stop_event_.fd());
     add(work_event_.fd());
+    add(slot_event_.fd());
     add(timer_.fd());
 
     enter(State::WaitAdapter);
 
     while (state_ != State::Stopping) {
-        epoll_event evs[3];
-        int n = ::epoll_wait(epoll_fd_, evs, 3, -1);
+        epoll_event evs[4];
+        int n = ::epoll_wait(epoll_fd_, evs, 4, -1);
         if (n < 0) {
             if (errno == EINTR) continue;
             spdlog::error("ble: epoll_wait: {}", std::strerror(errno));
@@ -297,6 +316,9 @@ void BleClient::run() {
             } else if (fd == work_event_.fd()) {
                 work_event_.consume();
                 on_work_event();
+            } else if (fd == slot_event_.fd()) {
+                slot_event_.consume();
+                on_slot_event();
             } else if (fd == timer_.fd()) {
                 timer_.consume();
                 on_timer_expired();

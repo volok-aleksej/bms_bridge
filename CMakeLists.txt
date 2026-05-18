@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(bms_bridge
-    VERSION 1.6.0
+    VERSION 1.8.0
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -71,6 +71,8 @@ install(FILES config/bms_bridge.conf
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/bms_bridge)
 install(DIRECTORY config/www/
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/bms_bridge/www)
+install(PROGRAMS scripts/migrate-db.sh
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/bms_bridge)
 
 enable_testing()
 add_subdirectory(tests)

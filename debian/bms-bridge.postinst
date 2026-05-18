@@ -16,6 +16,16 @@ case "$1" in
             cp "$TEMPLATE_FILE" "$CONFIG_FILE"
             chmod 0644 "$CONFIG_FILE"
         fi
+
+        # Migrate the history DB schema / flag an old-format config. Runs
+        # before the debhelper-generated service (re)start at the end of
+        # this script. Must never fail the install — the script is
+        # internally fault-tolerant, but guard it anyway.
+        MIGRATE=/usr/share/bms_bridge/migrate-db.sh
+        if [ -x "$MIGRATE" ]; then
+            "$MIGRATE" "$CONFIG_FILE" "$TEMPLATE_FILE" || \
+                echo "bms_bridge: migration script failed, continuing" >&2
+        fi
         ;;
 esac
 

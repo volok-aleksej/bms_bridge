@@ -157,6 +157,82 @@ struct BeWriter {
     void i16(int16_t v) { u16(static_cast<uint16_t>(v)); }
 };
 
+struct BeReader {
+    const uint8_t* p;
+    size_t n;
+    size_t i = 0;
+    bool   ok = true;
+
+    BeReader(const uint8_t* d, size_t len) : p(d), n(len) {}
+
+    uint8_t u8() {
+        if (i + 1 > n) { ok = false; return 0; }
+        return p[i++];
+    }
+    uint16_t u16() {
+        if (i + 2 > n) { ok = false; return 0; }
+        uint16_t v = static_cast<uint16_t>((p[i] << 8) | p[i + 1]);
+        i += 2;
+        return v;
+    }
+    int16_t i16() { return static_cast<int16_t>(u16()); }
+};
+
+}
+
+std::vector<uint8_t> build_analog_request(uint8_t adr) {
+    PylontechFrame f;            // ver=0x20, cid1=0x46 by default
+    f.adr  = adr;
+    f.cid2 = 0x42;
+    f.info = {adr};              // DATAINFO = COMMAND (battery address)
+    return build_pylontech(f);
+}
+
+std::vector<uint8_t> build_system_param_request(uint8_t adr) {
+    PylontechFrame f;
+    f.adr  = adr;
+    f.cid2 = 0x47;               // INFO empty for get-system-parameter
+    return build_pylontech(f);
+}
+
+bool AnalogResponse::deserialize(const std::vector<uint8_t>& info) {
+    BeReader r(info.data(), info.size());
+    infoflag = r.u8();
+    command  = r.u8();
+
+    const uint8_t n_cells = r.u8();
+    cell_voltages_mv.clear();
+    for (uint8_t k = 0; k < n_cells; ++k) cell_voltages_mv.push_back(r.u16());
+
+    const uint8_t n_temps = r.u8();
+    temperatures_k10.clear();
+    for (uint8_t k = 0; k < n_temps; ++k) temperatures_k10.push_back(r.u16());
+
+    current_01a         = r.i16();
+    module_voltage_mv   = r.u16();
+    remain_capacity_mah = r.u16();
+    user_defined_count  = r.u8();
+    total_capacity_mah  = r.u16();
+    cycle_count         = r.u16();
+    return r.ok;
+}
+
+bool SystemParameterResponse::deserialize(const std::vector<uint8_t>& info) {
+    BeReader r(info.data(), info.size());
+    infoflag                     = r.u8();
+    cell_high_voltage_limit_mv   = r.u16();
+    cell_low_voltage_limit_mv    = r.u16();
+    cell_under_voltage_limit_mv  = r.u16();
+    charge_high_temp_k10         = r.u16();
+    charge_low_temp_k10          = r.u16();
+    charge_current_limit_01a     = r.i16();
+    module_high_voltage_limit_mv = r.u16();
+    module_low_voltage_limit_mv  = r.u16();
+    module_under_voltage_limit_mv= r.u16();
+    discharge_high_temp_k10      = r.u16();
+    discharge_low_temp_k10       = r.u16();
+    discharge_current_limit_01a  = r.i16();
+    return r.ok;
 }
 
 void AnalogResponse::serialize(std::vector<uint8_t>& info) const {

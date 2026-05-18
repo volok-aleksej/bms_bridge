@@ -3,14 +3,21 @@
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
 namespace {
 
 constexpr const char* kSchemaSql = R"sql(
+CREATE TABLE IF NOT EXISTS batteries (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+
 CREATE TABLE IF NOT EXISTS samples (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    battery_id          INTEGER NOT NULL REFERENCES batteries(id),
     ts_ms               INTEGER NOT NULL,
     voltage_mv          INTEGER NOT NULL,
     current_ma          INTEGER NOT NULL,
@@ -29,7 +36,7 @@ CREATE TABLE IF NOT EXISTS samples (
     min_cell_idx        INTEGER NOT NULL,
     balance_current_ma  INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts_ms);
+CREATE INDEX IF NOT EXISTS idx_samples_bat_ts ON samples(battery_id, ts_ms);
 
 CREATE TABLE IF NOT EXISTS sample_cells (
     sample_id       INTEGER NOT NULL,
@@ -43,10 +50,11 @@ CREATE TABLE IF NOT EXISTS sample_cells (
 
 constexpr const char* kInsertSampleSql = R"sql(
 INSERT INTO samples (
-    ts_ms, voltage_mv, current_ma, soc_pct, remaining_mah, total_mah,
-    cycle_count, temp1_dc, temp2_dc, mos_temp_dc, flags, errors_bitmask,
-    avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx, balance_current_ma
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    battery_id, ts_ms, voltage_mv, current_ma, soc_pct, remaining_mah,
+    total_mah, cycle_count, temp1_dc, temp2_dc, mos_temp_dc, flags,
+    errors_bitmask, avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx,
+    balance_current_ma
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 )sql";
 
 constexpr const char* kInsertCellSql = R"sql(
@@ -74,6 +82,7 @@ History::History(std::string db_path, std::chrono::seconds ram_window)
 History::~History() {
     if (insert_sample_stmt_) sqlite3_finalize(insert_sample_stmt_);
     if (insert_cell_stmt_)   sqlite3_finalize(insert_cell_stmt_);
+    if (rdb_)                sqlite3_close(rdb_);
     if (db_)                 sqlite3_close(db_);
 }
 
@@ -102,10 +111,18 @@ void History::open_db() {
     exec("PRAGMA temp_store   = MEMORY");
     exec("PRAGMA foreign_keys = ON");
     exec(kSchemaSql);
-    // Migration: add column if DB was created before it existed
-    sqlite3_exec(db_,
-        "ALTER TABLE samples ADD COLUMN balance_current_ma INTEGER NOT NULL DEFAULT 0",
-        nullptr, nullptr, nullptr); // ignore error if column already exists
+
+
+    load_battery_cache();
+
+    if (sqlite3_open_v2(db_path_.c_str(), &rdb_,
+                        SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        spdlog::warn("history: read-only connection open failed: {}",
+                     rdb_ ? sqlite3_errmsg(rdb_) : "?");
+        if (rdb_) { sqlite3_close(rdb_); rdb_ = nullptr; }
+    } else {
+        sqlite3_busy_timeout(rdb_, 2000);
+    }
 
     spdlog::info("history: opened {}", db_path_);
 }
@@ -121,14 +138,54 @@ void History::prepare_statements() {
     prep(kInsertCellSql,   &insert_cell_stmt_);
 }
 
-void History::append(std::chrono::system_clock::time_point ts,
+int History::battery_row_id(sqlite3* conn, const std::string& name,
+                            bool create) const {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = battery_id_cache_.find(name);
+        if (it != battery_id_cache_.end()) return it->second;
+    }
+    if (!conn) return -1;
+
+    int id = -1;
+    sqlite3_stmt* sel = nullptr;
+    if (sqlite3_prepare_v2(conn, "SELECT id FROM batteries WHERE name = ?",
+                           -1, &sel, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(sel, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(sel) == SQLITE_ROW) id = sqlite3_column_int(sel, 0);
+        sqlite3_finalize(sel);
+    }
+
+    if (id < 0 && create) {
+        sqlite3_stmt* ins = nullptr;
+        if (sqlite3_prepare_v2(conn, "INSERT INTO batteries (name) VALUES (?)",
+                               -1, &ins, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(ins, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(ins) == SQLITE_DONE)
+                id = static_cast<int>(sqlite3_last_insert_rowid(conn));
+            else
+                spdlog::warn("history: insert battery '{}': {}", name,
+                             sqlite3_errmsg(conn));
+            sqlite3_finalize(ins);
+        }
+    }
+
+    if (id >= 0) {
+        std::lock_guard<std::mutex> lk(mtx_);
+        battery_id_cache_[name] = id;
+    }
+    return id;
+}
+
+void History::append(const std::string& battery_id,
+                     std::chrono::system_clock::time_point ts,
                      const JkCellInfo& cells, const JkPackInfo& pack) {
     const auto ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           ts.time_since_epoch()).count();
 
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        ram_.push_back(TelemetrySample{ts, cells, pack});
+        ram_.push_back(TelemetrySample{battery_id, ts, cells, pack});
         const auto cutoff = std::chrono::system_clock::now() - ram_window_;
         while (!ram_.empty() && ram_.front().ts < cutoff) {
             ram_.pop_front();
@@ -136,6 +193,13 @@ void History::append(std::chrono::system_clock::time_point ts,
     }
 
     if (!insert_sample_stmt_ || !insert_cell_stmt_) return;
+
+    const int bat_id = battery_row_id(db_, battery_id, /*create=*/true);
+    if (bat_id < 0) {
+        spdlog::warn("history: cannot resolve battery '{}', sample dropped",
+                     battery_id);
+        return;
+    }
 
     if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
         spdlog::warn("history: BEGIN failed: {}", sqlite3_errmsg(db_));
@@ -149,6 +213,7 @@ void History::append(std::chrono::system_clock::time_point ts,
     sqlite3_reset(insert_sample_stmt_);
     sqlite3_clear_bindings(insert_sample_stmt_);
     int i = 1;
+    sqlite3_bind_int  (insert_sample_stmt_, i++, bat_id);
     sqlite3_bind_int64(insert_sample_stmt_, i++, static_cast<sqlite3_int64>(ts_ms));
     sqlite3_bind_int64(insert_sample_stmt_, i++, pack.voltage_mv);
     sqlite3_bind_int64(insert_sample_stmt_, i++, pack.current_ma);
@@ -201,17 +266,85 @@ void History::append(std::chrono::system_clock::time_point ts,
     }
 }
 
-std::vector<TelemetrySample> History::recent() const {
+std::vector<TelemetrySample> History::recent(const std::string& battery_id) const {
     std::lock_guard<std::mutex> lk(mtx_);
-    return std::vector<TelemetrySample>(ram_.begin(), ram_.end());
+    std::vector<TelemetrySample> out;
+    for (const auto& s : ram_)
+        if (s.battery_id == battery_id) out.push_back(s);
+    return out;
+}
+
+int History::ensure_battery_id(const std::string& name) {
+    return battery_row_id(db_, name, /*create=*/true);
+}
+
+void History::load_battery_cache() {
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT id, name FROM batteries",
+                           -1, &st, nullptr) != SQLITE_OK) {
+        spdlog::warn("history: prepare load_battery_cache: {}",
+                     sqlite3_errmsg(db_));
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mtx_);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const int id = sqlite3_column_int(st, 0);
+        const unsigned char* v = sqlite3_column_text(st, 1);
+        battery_id_cache_[v ? reinterpret_cast<const char*>(v) : ""] = id;
+    }
+    sqlite3_finalize(st);
+}
+
+std::vector<History::BatteryRef> History::battery_list() const {
+    std::vector<BatteryRef> out;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        out.reserve(battery_id_cache_.size());
+        for (const auto& [name, id] : battery_id_cache_)
+            out.push_back({id, name});
+    }
+    std::sort(out.begin(), out.end(),
+              [](const BatteryRef& a, const BatteryRef& b) {
+                  return a.id < b.id;
+              });
+    return out;
+}
+
+std::string History::battery_name(int battery_id) const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (const auto& [name, id] : battery_id_cache_)
+        if (id == battery_id) return name;
+    return {};
 }
 
 std::vector<TelemetrySample> History::range(
+        const std::string& battery_id,
+        std::chrono::system_clock::time_point from,
+        std::chrono::system_clock::time_point to,
+        int limit, int64_t step_ms) const {
+    if (!rdb_) return {};
+    const int bat_id = battery_row_id(rdb_, battery_id, /*create=*/false);
+    if (bat_id < 0) return {};  // unknown battery → no rows
+    return range_core(bat_id, battery_id, from, to, limit, step_ms);
+}
+
+std::vector<TelemetrySample> History::range_by_id(
+        int battery_id,
+        std::chrono::system_clock::time_point from,
+        std::chrono::system_clock::time_point to,
+        int limit, int64_t step_ms) const {
+    if (!rdb_ || battery_id <= 0) return {};
+    return range_core(battery_id, battery_name(battery_id),
+                      from, to, limit, step_ms);
+}
+
+std::vector<TelemetrySample> History::range_core(
+        int bat_id, const std::string& name_for_result,
         std::chrono::system_clock::time_point from,
         std::chrono::system_clock::time_point to,
         int limit, int64_t step_ms) const {
     std::vector<TelemetrySample> out;
-    if (!db_) return out;
+    if (!rdb_) return out;
 
     const auto from_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             from.time_since_epoch()).count();
@@ -227,27 +360,29 @@ std::vector<TelemetrySample> History::range(
                avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx,
                balance_current_ma
         FROM samples
-        WHERE ts_ms >= ? AND ts_ms < ?
+        WHERE battery_id = ? AND ts_ms >= ? AND ts_ms < ?
         ORDER BY ts_ms DESC
         LIMIT ?
     )sql";
 
-    // Decimated query: one record (newest) per time bucket of step_ms size
+    // Decimated query: newest record per time bucket of step_ms size.
+    // A window function does this in a single bounded index pass
     constexpr const char* kSelectDecimatedSql = R"sql(
-        SELECT s.id, s.ts_ms, s.voltage_mv, s.current_ma, s.soc_pct,
-               s.remaining_mah, s.total_mah, s.cycle_count,
-               s.temp1_dc, s.temp2_dc, s.mos_temp_dc,
-               s.flags, s.errors_bitmask,
-               s.avg_cell_mv, s.diff_cell_mv, s.max_cell_idx, s.min_cell_idx,
-               s.balance_current_ma
-        FROM samples s
-        INNER JOIN (
-            SELECT MAX(ts_ms) AS ts_ms
+        SELECT id, ts_ms, voltage_mv, current_ma, soc_pct,
+               remaining_mah, total_mah, cycle_count,
+               temp1_dc, temp2_dc, mos_temp_dc,
+               flags, errors_bitmask,
+               avg_cell_mv, diff_cell_mv, max_cell_idx, min_cell_idx,
+               balance_current_ma
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                          PARTITION BY (ts_ms - ?) / ?
+                          ORDER BY ts_ms DESC) AS rn
             FROM samples
-            WHERE ts_ms >= ? AND ts_ms < ?
-            GROUP BY (ts_ms - ?) / ?
-        ) b ON s.ts_ms = b.ts_ms
-        ORDER BY s.ts_ms DESC
+            WHERE battery_id = ? AND ts_ms >= ? AND ts_ms < ?
+        )
+        WHERE rn = 1
+        ORDER BY ts_ms DESC
         LIMIT ?
     )sql";
     constexpr const char* kSelectCellsSql = R"sql(
@@ -260,30 +395,33 @@ std::vector<TelemetrySample> History::range(
     sqlite3_stmt* sst = nullptr;
     sqlite3_stmt* cst = nullptr;
     const char* sql = (step_ms > 0) ? kSelectDecimatedSql : kSelectSamplesSql;
-    if (sqlite3_prepare_v2(db_, sql, -1, &sst, nullptr) != SQLITE_OK) {
-        spdlog::warn("history: prepare range/samples: {}", sqlite3_errmsg(db_));
+    if (sqlite3_prepare_v2(rdb_, sql, -1, &sst, nullptr) != SQLITE_OK) {
+        spdlog::warn("history: prepare range/samples: {}", sqlite3_errmsg(rdb_));
         return out;
     }
-    if (sqlite3_prepare_v2(db_, kSelectCellsSql, -1, &cst, nullptr) != SQLITE_OK) {
-        spdlog::warn("history: prepare range/cells: {}", sqlite3_errmsg(db_));
+    if (sqlite3_prepare_v2(rdb_, kSelectCellsSql, -1, &cst, nullptr) != SQLITE_OK) {
+        spdlog::warn("history: prepare range/cells: {}", sqlite3_errmsg(rdb_));
         sqlite3_finalize(sst);
         return out;
     }
 
     if (step_ms > 0) {
-        sqlite3_bind_int64(sst, 1, static_cast<sqlite3_int64>(from_ms));
-        sqlite3_bind_int64(sst, 2, static_cast<sqlite3_int64>(to_ms));
-        sqlite3_bind_int64(sst, 3, static_cast<sqlite3_int64>(from_ms));
-        sqlite3_bind_int64(sst, 4, static_cast<sqlite3_int64>(step_ms));
-        sqlite3_bind_int  (sst, 5, limit > 0 ? limit : -1);
+        sqlite3_bind_int64(sst, 1, from_ms);   // PARTITION BY (ts_ms - ?)
+        sqlite3_bind_int64(sst, 2, step_ms);   //              / ?
+        sqlite3_bind_int  (sst, 3, bat_id);    // WHERE battery_id = ?
+        sqlite3_bind_int64(sst, 4, from_ms);   //   AND ts_ms >= ?
+        sqlite3_bind_int64(sst, 5, to_ms);     //   AND ts_ms <  ?
+        sqlite3_bind_int  (sst, 6, limit > 0 ? limit : -1);
     } else {
-        sqlite3_bind_int64(sst, 1, static_cast<sqlite3_int64>(from_ms));
-        sqlite3_bind_int64(sst, 2, static_cast<sqlite3_int64>(to_ms));
-        sqlite3_bind_int  (sst, 3, limit > 0 ? limit : -1);
+        sqlite3_bind_int  (sst, 1, bat_id);
+        sqlite3_bind_int64(sst, 2, from_ms);
+        sqlite3_bind_int64(sst, 3, to_ms);
+        sqlite3_bind_int  (sst, 4, limit > 0 ? limit : -1);
     }
 
     while (sqlite3_step(sst) == SQLITE_ROW) {
         TelemetrySample s;
+        s.battery_id = name_for_result;
         const sqlite3_int64 sample_id = sqlite3_column_int64(sst, 0);
         const sqlite3_int64 ts_ms = sqlite3_column_int64(sst, 1);
         s.ts = std::chrono::system_clock::time_point(

@@ -7,12 +7,14 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 struct sqlite3;
 struct sqlite3_stmt;
 
 struct TelemetrySample {
+    std::string battery_id;
     std::chrono::system_clock::time_point ts;
     JkCellInfo cells;
     JkPackInfo pack;
@@ -26,21 +28,33 @@ public:
     History(const History&) = delete;
     History& operator=(const History&) = delete;
 
-    // Append one cell_info sample. Pushes to the in-memory ring and writes
-    // to SQLite. SQLite write errors are logged but do not throw — the RAM
-    // ring keeps working so the HTTP recent-window endpoint still responds.
-    void append(std::chrono::system_clock::time_point ts,
+    void append(const std::string& battery_id,
+                std::chrono::system_clock::time_point ts,
                 const JkCellInfo& cells, const JkPackInfo& pack);
+    std::vector<TelemetrySample> recent(const std::string& battery_id) const;
 
-    // Snapshot copy of the in-memory ring (newest last). Cheap-ish: copies
-    // up to ~3 MB under a mutex; HTTP server is expected to call this from
-    // its own thread.
-    std::vector<TelemetrySample> recent() const;
+    // Ensure a `batteries` row exists for `name` and return its id.
+    // Reserve batteries never append at all, but still physically exist
+    // and must appear in the list / be queryable).
+    int ensure_battery_id(const std::string& name);
 
-    // Read samples from SQLite with ts in [from, to), sorted newest-first.
-    // limit < 0 means no limit.
-    // step_ms > 0: return one record per time bucket of that size (decimation).
-    std::vector<TelemetrySample> range(std::chrono::system_clock::time_point from,
+    // Every row of the `batteries` table: {row id, name}.
+    // The cache is pre-filled from the DB at startup and
+    // kept current by the lazy insert in append(),
+    // The legacy pre-multi-battery row has name "".
+    struct BatteryRef { int id; std::string name; };
+    std::vector<BatteryRef> battery_list() const;
+
+
+    std::string battery_name(int battery_id) const;
+
+    std::vector<TelemetrySample> range(const std::string& battery_id,
+                                       std::chrono::system_clock::time_point from,
+                                       std::chrono::system_clock::time_point to,
+                                       int     limit   = -1,
+                                       int64_t step_ms = 0) const;
+    std::vector<TelemetrySample> range_by_id(int battery_id,
+                                       std::chrono::system_clock::time_point from,
                                        std::chrono::system_clock::time_point to,
                                        int     limit   = -1,
                                        int64_t step_ms = 0) const;
@@ -49,13 +63,31 @@ private:
     void open_db();
     void prepare_statements();
 
+    // Resolve a battery name to its `batteries.id` using connection `conn`.
+    // With create=true a missing row is inserted (append path, write conn);
+    // with create=false a missing name yields -1 (read path, read conn).
+    // Cached.
+    int battery_row_id(sqlite3* conn, const std::string& name,
+                       bool create) const;
+
+    void load_battery_cache();
+
+    // Shared body of range()/range_by_id()
+    std::vector<TelemetrySample> range_core(
+        int bat_id, const std::string& name_for_result,
+        std::chrono::system_clock::time_point from,
+        std::chrono::system_clock::time_point to,
+        int limit, int64_t step_ms) const;
+
     std::string db_path_;
     std::chrono::seconds ram_window_;
 
     sqlite3*      db_                  = nullptr;
+    sqlite3*      rdb_                 = nullptr;
     sqlite3_stmt* insert_sample_stmt_  = nullptr;
     sqlite3_stmt* insert_cell_stmt_    = nullptr;
 
     mutable std::mutex mtx_;
     std::deque<TelemetrySample> ram_;
+    mutable std::unordered_map<std::string, int> battery_id_cache_;
 };

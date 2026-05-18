@@ -26,6 +26,8 @@ struct AnalogResponse {
     uint16_t cycle_count = 0;
 
     void serialize(std::vector<uint8_t>& info) const;
+    // Master-side: decode a battery's INFO payload. False if short/garbled.
+    bool deserialize(const std::vector<uint8_t>& info);
 };
 
 // CID2 = 0x44 — alarm / status flags.
@@ -63,6 +65,8 @@ struct SystemParameterResponse {
     int16_t  discharge_current_limit_01a = 0;
 
     void serialize(std::vector<uint8_t>& info) const;
+    // Master-side: decode a battery's INFO payload. False if short/garbled.
+    bool deserialize(const std::vector<uint8_t>& info);
 };
 
 // CID2 = 0x92 — charge/discharge management directives + battery permissions.
@@ -95,6 +99,13 @@ uint8_t module_count_for_capacity(uint32_t total_capacity_mah);
 int try_parse_pylontech(const uint8_t* buf, size_t len, PylontechFrame& out);
 
 std::vector<uint8_t> build_pylontech(const PylontechFrame& f);
+
+// Master-side request builders: a poll the bridge sends to the battery.
+// `adr` is the on-the-wire module address.
+//   0x42 get analog value     — INFO = [adr] (the COMMAND byte)
+//   0x47 get system parameter — INFO empty
+std::vector<uint8_t> build_analog_request(uint8_t adr);
+std::vector<uint8_t> build_system_param_request(uint8_t adr);
 
 std::vector<uint8_t> build_analog_response(const PylontechFrame& req,
                                            const JkCellInfo& cells,
