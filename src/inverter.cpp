@@ -130,16 +130,22 @@ void Inverter::process_buffer() {
         JkSettings lim   = *snap.settings;
 
         if (is_reserve) {
+            // Voltage, cells, temps and SoC% come from the mirror so the
+            // inverter's averaged SoC stays correct. Capacity fields use the
+            // reserve's own configured Ah (different from the mirror) but are
+            // scaled by the mirror's SoC% so remaining/total stay consistent.
+            // The reserve carries no real current; its charge/discharge limit
+            // is 0.5C of its own capacity — the headroom that justifies
+            // exposing this module.
             const uint32_t cap_mah =
                 static_cast<uint32_t>(slot.battery->config().capacity) * 1000;
             const uint32_t ilim_ma =
                 static_cast<uint32_t>(slot.battery->config().capacity)
                 * 1000 * kReserveCRateTenths / 10;
 
-            pack.state_of_charge_pct    = 100;
-            pack.current_ma             = 0;
-            pack.remaining_capacity_mah = cap_mah;
             pack.total_capacity_mah     = cap_mah;
+            pack.remaining_capacity_mah = cap_mah * pack.state_of_charge_pct / 100;
+            pack.current_ma             = 0;
             lim.max_charge_current_ma    = ilim_ma;
             lim.max_discharge_current_ma = ilim_ma;
         }
