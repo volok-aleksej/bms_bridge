@@ -1,3 +1,16 @@
+bms-bridge (2.0.0) stable; urgency=medium
+
+  * Daily energy aggregation: new daily_energy table accumulates charged/
+    discharged kWh per battery per day; raw samples older than 8 days are
+    purged automatically (migration runs on first start).
+  * New /daily API endpoint for per-battery monthly energy data.
+  * New Energy tab: monthly bar chart (charged/discharged kWh) with
+    prev/next month navigation, per-battery selector, monthly totals.
+  * Realtime tab: power in kW displayed alongside current reading.
+  * Legacy battery labelled "Archive" across all charts and selectors.
+
+ -- Alexey Volokitin <elenaluk89@gmail.com>  Wed, 20 May 2026 11:00:00 +0300
+
 bms-bridge (1.9.0) stable; urgency=medium
 
   * Reserve battery: SoC%, voltage, cells and temps now mirror the monitored

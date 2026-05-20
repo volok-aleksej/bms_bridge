@@ -86,6 +86,14 @@ int main(int argc, char** argv) {
     for (const auto& bc : cfg.batteries)
         history.ensure_battery_id(bc.name);
 
+    // Migrate / catch up on all days older than the retention window
+    history.aggregate_pending();
+
+    // Re-check every hour in case the process was running at midnight
+    dispatcher.add_timer(3600000, [&history] {
+        history.aggregate_pending();
+    });
+
     for (auto& b : batteries)
         b->start(dispatcher, history);
 

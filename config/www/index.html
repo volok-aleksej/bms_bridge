@@ -16,6 +16,7 @@
     <button :class="{active: tab==='realtime'}" @click="tab='realtime'">Realtime</button>
     <button :class="{active: tab==='settings'}" @click="tab='settings'">Settings</button>
     <button :class="{active: tab==='history'}"  @click="tab='history'; loadHistory()">History</button>
+    <button :class="{active: tab==='energy'}"   @click="tab='energy'; loadEnergy()">Energy</button>
   </nav>
   <span class="hdr-status" x-text="status"></span>
 </header>
@@ -29,7 +30,7 @@
     <button class="batt-chip"
             :class="{active: b.id===battery}"
             @click="selectBattery(b.id)">
-      <span x-text="b.name"></span>
+      <span x-text="b.legacy || b.name === '' ? 'Archive' : b.name"></span>
     </button>
   </template>
 </div>
@@ -48,7 +49,9 @@
       <div class="gauge-label">Current</div>
       <div class="gauge-reading"
            :class="live.current_ma > 0 ? 'pos' : live.current_ma < 0 ? 'neg' : ''"
-           x-text="live.current_ma != null ? (live.current_ma>=0?'+':'')+(live.current_ma/1000).toFixed(2)+' A' : '—'"></div>
+           x-html="live.current_ma != null && live.voltage_mv != null
+             ? (live.current_ma>=0?'+':'')+(live.current_ma/1000).toFixed(2)+' A&nbsp;<span class=\'gauge-kw\'>/ '+(live.current_ma>=0?'+':'')+(live.voltage_mv/1000*live.current_ma/1000/1000).toFixed(3)+' kW</span>'
+             : '—'"></div>
     </div>
     <div class="soc-wrap">
       <div class="soc-label">SoC</div>
@@ -104,6 +107,20 @@
         </div>
       </template>
     </template>
+  </div>
+</div>
+
+<!-- ═══════════════════════ ENERGY ═════════════════════════ -->
+<div x-show="tab==='energy'">
+  <div class="energy-toolbar">
+    <button @click="prevEnergyMonth()">&larr;</button>
+    <span class="energy-month-label" x-text="energyMonthLabel()"></span>
+    <button @click="nextEnergyMonth()" :disabled="!canNextEnergyMonth()">&rarr;</button>
+    <span class="hdr-status" x-text="energyStatus"></span>
+  </div>
+  <div class="energy-totals" x-show="energyTotals" x-html="energyTotals"></div>
+  <div class="charts">
+    <div class="chart-box" style="height:280px"><canvas id="ce"></canvas></div>
   </div>
 </div>
 

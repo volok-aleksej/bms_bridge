@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <limits.h>
 #include <memory>
@@ -180,6 +181,8 @@ void HttpServer::on_request(evhttp_request* req, void* arg) {
         self->handle_batteries(req);
     } else if (path_s == "/history") {
         self->handle_history(req);
+    } else if (path_s == "/daily") {
+        self->handle_daily(req);
     } else {
         self->serve_file(req, path_s);
     }
@@ -400,6 +403,46 @@ void HttpServer::handle_info(evhttp_request* req) {
     cJSON_AddBoolToObject  (root.p, "charging_switch_on",        s.charging_switch_on);
     cJSON_AddBoolToObject  (root.p, "discharging_switch_on",     s.discharging_switch_on);
     cJSON_AddBoolToObject  (root.p, "balancer_switch_on",        s.balancer_switch_on);
+    send_json(req, HTTP_OK, cjson_print(root.p));
+}
+
+void HttpServer::handle_daily(evhttp_request* req) {
+    const char* uri = evhttp_request_get_uri(req);
+    evhttp_uri* parsed = evhttp_uri_parse(uri);
+    const char* q = parsed ? evhttp_uri_get_query(parsed) : nullptr;
+    evkeyvalq params{};
+    if (q) evhttp_parse_query_str(q, &params);
+
+    int battery_id = 0, year = 0, month = 0;
+    if (const char* v = evhttp_find_header(&params, "battery")) battery_id = std::atoi(v);
+    if (const char* v = evhttp_find_header(&params, "year"))    year  = std::atoi(v);
+    if (const char* v = evhttp_find_header(&params, "month"))   month = std::atoi(v);
+    evhttp_clear_headers(&params);
+    if (parsed) evhttp_uri_free(parsed);
+
+    if (year <= 0 || month <= 0) {
+        time_t now_t = std::chrono::system_clock::to_time_t(
+                           std::chrono::system_clock::now());
+        struct tm gmt{};
+        gmtime_r(&now_t, &gmt);
+        year  = gmt.tm_year + 1900;
+        month = gmt.tm_mon + 1;
+    }
+
+    const auto data = history_.get_daily_energy(battery_id, year, month);
+
+    CJsonPtr root(cJSON_CreateObject());
+    cJSON_AddNumberToObject(root.p, "battery_id", battery_id);
+    cJSON_AddNumberToObject(root.p, "year",  year);
+    cJSON_AddNumberToObject(root.p, "month", month);
+    cJSON* arr = cJSON_AddArrayToObject(root.p, "data");
+    for (const auto& e : data) {
+        cJSON* o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "date",          e.date.c_str());
+        cJSON_AddNumberToObject(o, "charged_wh",    e.charged_wh);
+        cJSON_AddNumberToObject(o, "discharged_wh", e.discharged_wh);
+        cJSON_AddItemToArray(arr, o);
+    }
     send_json(req, HTTP_OK, cjson_print(root.p));
 }
 

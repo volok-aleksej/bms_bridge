@@ -4,7 +4,9 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <stdexcept>
 
 namespace {
@@ -37,6 +39,16 @@ CREATE TABLE IF NOT EXISTS samples (
     balance_current_ma  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_samples_bat_ts ON samples(battery_id, ts_ms);
+
+CREATE TABLE IF NOT EXISTS daily_energy (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    battery_id    INTEGER NOT NULL REFERENCES batteries(id),
+    date          TEXT    NOT NULL,
+    charged_wh    REAL    NOT NULL DEFAULT 0,
+    discharged_wh REAL    NOT NULL DEFAULT 0,
+    UNIQUE(battery_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_bat_date ON daily_energy(battery_id, date);
 
 CREATE TABLE IF NOT EXISTS sample_cells (
     sample_id       INTEGER NOT NULL,
@@ -110,6 +122,7 @@ void History::open_db() {
     exec("PRAGMA synchronous  = NORMAL");
     exec("PRAGMA temp_store   = MEMORY");
     exec("PRAGMA foreign_keys = ON");
+    sqlite3_busy_timeout(db_, 5000);
     exec(kSchemaSql);
 
 
@@ -462,5 +475,176 @@ std::vector<TelemetrySample> History::range_core(
 
     sqlite3_finalize(cst);
     sqlite3_finalize(sst);
+    return out;
+}
+
+void History::aggregate_pending() {
+    time_t now_t = std::chrono::system_clock::to_time_t(
+                       std::chrono::system_clock::now());
+    struct tm gmt{};
+    gmtime_r(&now_t, &gmt);
+    gmt.tm_hour = gmt.tm_min = gmt.tm_sec = 0;
+    gmt.tm_isdst = 0;
+    const int64_t today_ms = (int64_t)timegm(&gmt) * 1000;
+    // Raw samples older than 8 days are purged; daily_energy keeps everything.
+    const int64_t purge_ms = today_ms - 8LL * 86400000LL;
+
+    constexpr const char* kFindPending = R"sql(
+        SELECT DISTINCT s.battery_id, date(s.ts_ms/1000, 'unixepoch') AS d
+        FROM samples s
+        LEFT JOIN daily_energy de
+               ON de.battery_id = s.battery_id
+              AND de.date = date(s.ts_ms/1000, 'unixepoch')
+        WHERE s.ts_ms < ? AND de.id IS NULL
+        ORDER BY s.battery_id, d
+    )sql";
+
+    sqlite3_stmt* find_st = nullptr;
+    if (sqlite3_prepare_v2(db_, kFindPending, -1, &find_st, nullptr) != SQLITE_OK) {
+        spdlog::warn("history: aggregate_pending prepare: {}", sqlite3_errmsg(db_));
+        return;
+    }
+    sqlite3_bind_int64(find_st, 1, today_ms);
+
+    std::vector<std::pair<int, std::string>> pending;
+    while (sqlite3_step(find_st) == SQLITE_ROW) {
+        int bat = sqlite3_column_int(find_st, 0);
+        const auto* d = sqlite3_column_text(find_st, 1);
+        if (d) pending.push_back({bat, reinterpret_cast<const char*>(d)});
+    }
+    sqlite3_finalize(find_st);
+
+    if (pending.empty()) return;
+    spdlog::info("history: aggregating {} day(s)", pending.size());
+
+    constexpr const char* kGetSamples = R"sql(
+        SELECT ts_ms, voltage_mv, current_ma
+        FROM samples
+        WHERE battery_id = ? AND ts_ms >= ? AND ts_ms < ?
+        ORDER BY ts_ms ASC
+    )sql";
+    constexpr const char* kInsertDaily = R"sql(
+        INSERT OR REPLACE INTO daily_energy(battery_id, date, charged_wh, discharged_wh)
+        VALUES(?,?,?,?)
+    )sql";
+
+    for (const auto& [bat_id, date_s] : pending) {
+        struct tm t{};
+        strptime(date_s.c_str(), "%Y-%m-%d", &t);
+        t.tm_isdst = 0;
+        const int64_t day_start = (int64_t)timegm(&t) * 1000;
+        const int64_t day_end   = day_start + 86400000LL;
+
+        // Trapezoidal energy integration over the day's raw samples
+        double charged = 0.0, discharged = 0.0;
+        {
+            sqlite3_stmt* sst = nullptr;
+            if (sqlite3_prepare_v2(db_, kGetSamples, -1, &sst, nullptr) != SQLITE_OK) {
+                spdlog::warn("history: aggregate load samples: {}", sqlite3_errmsg(db_));
+                continue;
+            }
+            sqlite3_bind_int  (sst, 1, bat_id);
+            sqlite3_bind_int64(sst, 2, day_start);
+            sqlite3_bind_int64(sst, 3, day_end);
+
+            int64_t prev_ts  = 0;
+            double  prev_pw  = 0.0;
+            bool    has_prev = false;
+            while (sqlite3_step(sst) == SQLITE_ROW) {
+                const int64_t ts = sqlite3_column_int64(sst, 0);
+                // P [W] = voltage_mV/1000 * current_mA/1000
+                const double pw = (double)sqlite3_column_int(sst, 1)
+                                * (double)sqlite3_column_int(sst, 2)
+                                / 1.0e6;
+                if (has_prev) {
+                    const double dt_h = (double)(ts - prev_ts) / 3600000.0;
+                    const double dwh  = (prev_pw + pw) / 2.0 * dt_h;
+                    if (dwh > 0.0) charged    += dwh;
+                    else           discharged -= dwh;
+                }
+                prev_ts = ts; prev_pw = pw; has_prev = true;
+            }
+            sqlite3_finalize(sst);
+        }
+
+        // Write to daily_energy and delete raw samples atomically
+        if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            spdlog::warn("history: aggregate BEGIN: {}", sqlite3_errmsg(db_));
+            continue;
+        }
+
+        bool ok = false;
+        sqlite3_stmt* ins = nullptr;
+        if (sqlite3_prepare_v2(db_, kInsertDaily, -1, &ins, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int   (ins, 1, bat_id);
+            sqlite3_bind_text  (ins, 2, date_s.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(ins, 3, charged);
+            sqlite3_bind_double(ins, 4, discharged);
+            ok = (sqlite3_step(ins) == SQLITE_DONE);
+        }
+        if (ins) sqlite3_finalize(ins);
+
+        if (ok && sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK) {
+            spdlog::info("history: aggregated bat={} {} ch={:.3f}Wh dis={:.3f}Wh",
+                         bat_id, date_s, charged, discharged);
+        } else {
+            spdlog::warn("history: aggregate failed bat={} {}: {}",
+                         bat_id, date_s, sqlite3_errmsg(db_));
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        }
+    }
+
+    // Purge raw samples older than 8 days regardless of aggregation status
+    sqlite3_stmt* del = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM samples WHERE ts_ms < ?",
+                           -1, &del, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(del, 1, purge_ms);
+        if (sqlite3_step(del) == SQLITE_DONE) {
+            const int purged = sqlite3_changes(db_);
+            if (purged > 0)
+                spdlog::info("history: purged {} raw sample(s) older than 8 days", purged);
+        }
+        sqlite3_finalize(del);
+    }
+}
+
+std::vector<DailyEnergy> History::get_daily_energy(
+        int battery_id, int year, int month) const {
+    if (!rdb_) return {};
+
+    char month_start[11], month_end[11];
+    snprintf(month_start, sizeof(month_start), "%04d-%02d-01", year, month);
+    int ny = year, nm = month + 1;
+    if (nm > 12) { nm = 1; ++ny; }
+    snprintf(month_end, sizeof(month_end), "%04d-%02d-01", ny, nm);
+
+    constexpr const char* kSql = R"sql(
+        SELECT battery_id, date, charged_wh, discharged_wh
+        FROM daily_energy
+        WHERE battery_id = ? AND date >= ? AND date < ?
+        ORDER BY date ASC
+    )sql";
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(rdb_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        spdlog::warn("history: get_daily_energy: {}", sqlite3_errmsg(rdb_));
+        return {};
+    }
+    sqlite3_bind_int (st, 1, battery_id);
+    sqlite3_bind_text(st, 2, month_start, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, month_end,   -1, SQLITE_TRANSIENT);
+
+    std::vector<DailyEnergy> out;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        DailyEnergy e;
+        e.battery_id    = sqlite3_column_int(st, 0);
+        const auto* d   = sqlite3_column_text(st, 1);
+        e.date          = d ? reinterpret_cast<const char*>(d) : "";
+        e.charged_wh    = sqlite3_column_double(st, 2);
+        e.discharged_wh = sqlite3_column_double(st, 3);
+        e.battery_name  = battery_name(e.battery_id);
+        out.push_back(std::move(e));
+    }
+    sqlite3_finalize(st);
     return out;
 }

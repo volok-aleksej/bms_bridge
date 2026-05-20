@@ -13,6 +13,14 @@
 struct sqlite3;
 struct sqlite3_stmt;
 
+struct DailyEnergy {
+    int         battery_id    = 0;
+    std::string battery_name;
+    std::string date;           // "YYYY-MM-DD" UTC
+    double      charged_wh    = 0.0;
+    double      discharged_wh = 0.0;
+};
+
 struct TelemetrySample {
     std::string battery_id;
     std::chrono::system_clock::time_point ts;
@@ -58,6 +66,14 @@ public:
                                        std::chrono::system_clock::time_point to,
                                        int     limit   = -1,
                                        int64_t step_ms = 0) const;
+
+    // Aggregate all complete past UTC days not yet in daily_energy, then purge
+    // the raw sample rows for those days.  Handles first-run migration too.
+    void aggregate_pending();
+
+    // All daily_energy rows for battery_id in the given calendar month (UTC).
+    std::vector<DailyEnergy> get_daily_energy(int battery_id,
+                                              int year, int month) const;
 
 private:
     void open_db();

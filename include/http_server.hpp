@@ -47,6 +47,7 @@ private:
     void handle_info(struct evhttp_request* req);
     void handle_batteries(struct evhttp_request* req);
     void handle_history(struct evhttp_request* req);
+    void handle_daily(struct evhttp_request* req);
     void serve_file(struct evhttp_request* req, const std::string& path);
     void handle_history_next(struct evhttp_request* req, const std::string& req_id);
     void handle_history_initial(struct evhttp_request* req,

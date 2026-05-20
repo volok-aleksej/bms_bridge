@@ -142,7 +142,8 @@ const BATT_COLORS = ['#0969da', '#1a7f37', '#9a6700', '#8250df',
 // scales↔chart); if it were stored on reactive component data, Alpine's
 // deep Proxy wrap would recurse forever → "Maximum call stack size
 // exceeded". This module-scoped holder is never seen by Alpine reactivity.
-let CHARTS = null;
+let CHARTS       = null;
+let ENERGY_CHART = null;
 
 // Create an empty Chart.js line chart. Lines are (re)built later via
 // setSeries() so one chart can carry one line per battery.
@@ -275,14 +276,18 @@ function buildInfoRows(info) {
 
 function bms() {
   return {
-    tab:       'realtime',
-    live:      {},
-    info:      null,
-    status:    'connecting…',
-    histHours: 24,
-    histStatus:'',
-    batteries: [],   // from /batteries; history draws one line per battery
-    battery:   0,    // selected batteries.id for Realtime/Settings
+    tab:         'realtime',
+    live:        {},
+    info:        null,
+    status:      'connecting…',
+    histHours:   24,
+    histStatus:  '',
+    energyYear:   new Date().getFullYear(),
+    energyMonth:  new Date().getMonth() + 1,
+    energyStatus: '',
+    energyTotals: '',
+    batteries:   [],  // from /batteries; history draws one line per battery
+    battery:     0,   // selected batteries.id for Realtime/Settings/Energy
 
     _vMin: 40, _vMax: 70,   // voltage gauge range (V)
     _iMin: -100, _iMax: 100, // current gauge range (A)
@@ -300,6 +305,7 @@ function bms() {
         const sel = this.selectableBatteries();
         if (sel.length && !sel.some(b => b.id === this.battery))
           this.selectBattery(sel[0].id);
+        if (this.tab === 'energy') this.loadEnergy();
       });
       this._startLivePolling();
       this._histLastLoad = 0;
@@ -323,17 +329,16 @@ function bms() {
       };
     },
 
-    // Default Realtime/Settings battery: first monitored, else first
-    // non-legacy, else whatever is first (legacy archive only).
-    // Batteries shown in the Realtime/Settings selector: monitored, non-
-    // legacy only. Reserve mirrors a sibling (no own telemetry) and legacy
-    // is history-only — neither has anything live to show here.
     selectableBatteries() {
-      // Realtime: only real monitored batteries. Settings: also the
-      // reserve (its "settings" come from config). Legacy never.
-      const withReserve = this.tab === 'settings';
-      return this.batteries.filter(b =>
-        !b.legacy && (b.monitored || (withReserve && b.link === 'reserve')));
+      if (this.tab === 'settings')
+        // Settings: monitored + reserve (reserve shows config-derived info)
+        return this.batteries.filter(b => !b.legacy);
+      if (this.tab === 'energy')
+        // Energy: all batteries with potential samples — monitored + legacy,
+        // but NOT reserve (it never writes samples → nothing to show)
+        return this.batteries.filter(b => b.monitored || b.legacy);
+      // Realtime: only monitored (live telemetry)
+      return this.batteries.filter(b => !b.legacy && b.monitored);
     },
 
     _pickDefaultBattery() {
@@ -347,7 +352,7 @@ function bms() {
       this.live = {};
       this.info = null;
       this._fetchInfo();
-      // History is battery-independent (all lines), no reload needed.
+      if (this.tab === 'energy') this.loadEnergy();
     },
 
     async _fetchInfo() {
@@ -448,7 +453,7 @@ function bms() {
           const b = list[i];
           const data = await this._fetchHistoryFor(b.id, t0s, t1s, per);
           if (!data.length) continue;
-          const label = b.legacy || b.name === '' ? 'Архив' : b.name;
+          const label = b.legacy || b.name === '' ? 'Archive' : b.name;
           series.push({ label, color: BATT_COLORS[i % BATT_COLORS.length], data });
           total += data.length;
         }
@@ -501,6 +506,123 @@ function bms() {
         ];
       }
       return buildInfoRows(i);
+    },
+
+    // ── Energy tab ────────────────────────────────────────────────────────────
+
+    energyMonthLabel() {
+      const months = ['January','February','March','April','May','June',
+                      'July','August','September','October','November','December'];
+      return months[this.energyMonth - 1] + ' ' + this.energyYear;
+    },
+
+    canNextEnergyMonth() {
+      const now = new Date();
+      return this.energyYear < now.getFullYear() ||
+             (this.energyYear === now.getFullYear() &&
+              this.energyMonth < now.getMonth() + 1);
+    },
+
+    prevEnergyMonth() {
+      if (this.energyMonth === 1) { this.energyMonth = 12; this.energyYear--; }
+      else this.energyMonth--;
+      this.loadEnergy();
+    },
+
+    nextEnergyMonth() {
+      if (!this.canNextEnergyMonth()) return;
+      if (this.energyMonth === 12) { this.energyMonth = 1; this.energyYear++; }
+      else this.energyMonth++;
+      this.loadEnergy();
+    },
+
+    _initEnergyChart() {
+      const cv = document.getElementById('ce');
+      if (!cv || !window.Chart) return;
+      ENERGY_CHART = new window.Chart(cv, {
+        type: 'bar',
+        data: { labels: [], datasets: [] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          grouped: false,
+          plugins: {
+            title:  { display: true, text: 'Daily Energy (kWh)', align: 'start',
+                      color: AXIS_CLR, font: AXIS_FONT },
+            legend: { display: true,
+                      labels: { boxWidth: 12, boxHeight: 12,
+                                color: AXIS_CLR, font: AXIS_FONT } },
+            tooltip: {
+              titleFont: AXIS_FONT, bodyFont: AXIS_FONT,
+              callbacks: {
+                label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(3) + ' kWh',
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: AXIS_CLR, font: AXIS_FONT, maxRotation: 45 },
+                 grid:  { color: GRID_CLR } },
+            y: { ticks: { color: AXIS_CLR, font: AXIS_FONT,
+                          callback: v => v.toFixed(1) + ' kWh' },
+                 grid:  { color: GRID_CLR },
+                 min: 0 },
+          },
+        },
+      });
+    },
+
+    async loadEnergy() {
+      this.energyStatus = 'loading…';
+      try {
+        const r = await fetch(
+          `/daily?battery=${this.battery}&year=${this.energyYear}&month=${this.energyMonth}`);
+        if (!r.ok) throw new Error(r.status);
+        const j = await r.json();
+
+        await this.$nextTick();
+        if (!ENERGY_CHART) this._initEnergyChart();
+        if (!ENERGY_CHART) { this.energyStatus = 'chart error'; return; }
+        ENERGY_CHART.resize();
+
+        // Fill every day of the month (zeros for missing days)
+        const daysInMonth = new Date(this.energyYear, this.energyMonth, 0).getDate();
+        const dataMap = {};
+        j.data.forEach(d => { dataMap[d.date] = d; });
+        const labels = [], charged = [], discharged = [];
+        for (let day = 1; day <= daysInMonth; day++) {
+          const ds = `${this.energyYear}-${String(this.energyMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+          labels.push(String(day));
+          const e = dataMap[ds];
+          charged.push(e ? e.charged_wh    / 1000 : 0);
+          discharged.push(e ? e.discharged_wh / 1000 : 0);
+        }
+
+        const totalC = charged.reduce((a, b) => a + b, 0);
+        const totalD = discharged.reduce((a, b) => a + b, 0);
+
+        ENERGY_CHART.data.labels = labels;
+        ENERGY_CHART.data.datasets = [
+          // Wide bar (background) — charged
+          { label: 'Charged',    data: charged,
+            backgroundColor: '#2da44e', borderColor: '#196c2e', borderWidth: 1.5,
+            barPercentage: 1.0, categoryPercentage: 0.85, order: 2 },
+          // Narrow bar (foreground overlay) — discharged
+          { label: 'Discharged', data: discharged,
+            backgroundColor: '#e5534b', borderColor: '#9e2a2a', borderWidth: 1.5,
+            barPercentage: 0.55, categoryPercentage: 0.85, order: 1 },
+        ];
+        ENERGY_CHART.update('none');
+
+        this.energyTotals = j.data.length
+          ? `<span style="color:#2da44e;font-weight:bold">&#9646; Charged: ${totalC.toFixed(2)} kWh</span>&nbsp;&nbsp;&nbsp;<span style="color:#e5534b;font-weight:bold">&#9646; Discharged: ${totalD.toFixed(2)} kWh</span>`
+          : '';
+        this.energyStatus = j.data.length
+          ? new Date().toLocaleTimeString()
+          : 'no data for this month';
+      } catch (e) {
+        this.energyStatus = 'error: ' + e.message;
+      }
     },
   };
 }
