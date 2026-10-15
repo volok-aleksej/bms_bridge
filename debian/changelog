@@ -1,3 +1,11 @@
+bms-bridge (2.1.0) stable; urgency=medium
+
+  * http { bind } sets the listen address; the template binds 127.0.0.1
+    on port 8080 so the dashboard is reached through a reverse proxy.
+  * The page uses relative URLs and works under a path prefix.
+
+ -- Alexey Volokitin <elenaluk89@gmail.com>  Thu, 15 Oct 2026 23:50:00 +0300
+
 bms-bridge (2.0.0) stable; urgency=medium
 
   * Daily energy aggregation: new daily_energy table accumulates charged/
