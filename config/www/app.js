@@ -1,5 +1,8 @@
 'use strict';
 
+// All API URLs are relative (no leading slash) so the page keeps working
+// when a reverse proxy mounts this service under a path prefix.
+
 // ── Gauge drawing ─────────────────────────────────────────────────────────────
 
 function drawGauge(canvasId, value, min, max, unit, zones) {
@@ -357,7 +360,7 @@ function bms() {
 
     async _fetchInfo() {
       try {
-        const r = await fetch('/info?battery=' + this.battery);
+        const r = await fetch('info?battery=' + this.battery);
         if (r.ok) this.info = await r.json();
       } catch (_) {}
     },
@@ -367,7 +370,7 @@ function bms() {
         try {
           const now = Math.floor(Date.now() / 1000);
           const q = '&battery=' + this.battery;
-          const r = await fetch(`/history?time_start=${now - 10}&time_end=${now}&count=1${q}`);
+          const r = await fetch(`history?time_start=${now - 10}&time_end=${now}&count=1${q}`);
           if (!r.ok) throw new Error(r.status);
           const j = await r.json();
           if (j.data && j.data.length) {
@@ -405,7 +408,7 @@ function bms() {
 
     async _fetchBatteryList() {
       try {
-        const r = await fetch('/batteries');
+        const r = await fetch('batteries');
         if (r.ok) {
           const list = await r.json();
           if (Array.isArray(list)) this.batteries = list;
@@ -418,11 +421,11 @@ function bms() {
     // the battery bound to req_id, so ?next needs no param.
     async _fetchHistoryFor(id, t0s, t1s, per) {
       const q = '&battery=' + id;
-      let r = await fetch(`/history?time_start=${t0s}&time_end=${t1s}&count=${per}${q}`);
+      let r = await fetch(`history?time_start=${t0s}&time_end=${t1s}&count=${per}${q}`);
       let j = await r.json();
       let all = [...j.data];
       while (j.data.length === per) {
-        r = await fetch('/history?next=1&req_id=' + j.req_id);
+        r = await fetch('history?next=1&req_id=' + j.req_id);
         if (!r.ok) break;
         j = await r.json();
         if (j.error || !j.data.length) break;
@@ -576,7 +579,7 @@ function bms() {
       this.energyStatus = 'loading…';
       try {
         const r = await fetch(
-          `/daily?battery=${this.battery}&year=${this.energyYear}&month=${this.energyMonth}`);
+          `daily?battery=${this.battery}&year=${this.energyYear}&month=${this.energyMonth}`);
         if (!r.ok) throw new Error(r.status);
         const j = await r.json();
 
