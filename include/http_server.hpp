@@ -23,7 +23,7 @@ class HttpServer : public Thread {
 public:
     HttpServer(const History& history,
                const std::vector<std::unique_ptr<Battery>>& batteries,
-               uint16_t port, std::string www_root);
+               std::string bind, uint16_t port, std::string www_root);
     ~HttpServer() override;
 
     HttpServer(const HttpServer&) = delete;
@@ -60,6 +60,7 @@ private:
 
     const History&                                history_;
     const std::vector<std::unique_ptr<Battery>>&  batteries_;
+    std::string                                   bind_;
     uint16_t                                      port_;
     std::string                                   www_root_;
 

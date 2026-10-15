@@ -104,6 +104,7 @@ cfg_opt_t inverter_opts[] = {
 };
 
 cfg_opt_t http_opts[] = {
+    CFG_STR("bind", "0.0.0.0", CFGF_NONE),
     CFG_INT("port", 80, CFGF_NONE),
     CFG_STR("www_root", "/usr/share/bms_bridge/www", CFGF_NONE),
     CFG_END()
@@ -167,6 +168,7 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
     out.inverter.uart_baud = cfg_getint(inv, "baud");
 
     if (cfg_t* s = cfg_getsec(cfg, "http")) {
+        out.http.bind      = sstr(s, "bind");
         out.http.http_port = cfg_getint(s, "port");
         out.http.www_root  = sstr(s, "www_root");
     }

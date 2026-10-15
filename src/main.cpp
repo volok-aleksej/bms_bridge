@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     Inverter inv(cfg.inverter.uart_device, cfg.inverter.uart_baud, batteries);
     inv.attach(dispatcher);
 
-    HttpServer http_server(history, batteries,
+    HttpServer http_server(history, batteries, cfg.http.bind,
                            cfg.http.http_port, cfg.http.www_root);
     http_server.start();
 

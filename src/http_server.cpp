@@ -123,8 +123,8 @@ const char* mime_for_ext(const std::string& path) {
 
 HttpServer::HttpServer(const History& history,
                        const std::vector<std::unique_ptr<Battery>>& batteries,
-                       uint16_t port, std::string www_root)
-    : history_(history), batteries_(batteries), port_(port),
+                       std::string bind, uint16_t port, std::string www_root)
+    : history_(history), batteries_(batteries), bind_(std::move(bind)), port_(port),
       www_root_(std::move(www_root)) {
     evthread_use_pthreads();
     base_ = event_base_new();
@@ -135,8 +135,8 @@ HttpServer::HttpServer(const History& history,
 
     evhttp_set_gencb(http_, on_request, this);
 
-    if (evhttp_bind_socket(http_, "0.0.0.0", port_) != 0)
-        throw std::runtime_error("http: cannot bind port " + std::to_string(port_));
+    if (evhttp_bind_socket(http_, bind_.c_str(), port_) != 0)
+        throw std::runtime_error("http: cannot bind " + bind_ + ":" + std::to_string(port_));
 
     sweep_ev_ = event_new(base_, -1, EV_PERSIST, on_sweep, this);
     struct timeval tv{kSweepSec, 0};
@@ -151,7 +151,7 @@ HttpServer::~HttpServer() {
 }
 
 void HttpServer::run() {
-    spdlog::info("http: listening on 0.0.0.0:{}", port_);
+    spdlog::info("http: listening on {}:{}", bind_, port_);
     event_base_dispatch(base_);
     spdlog::info("http: event loop stopped");
 }
