@@ -277,10 +277,31 @@ function buildInfoRows(info) {
 
 // ── Alpine component ──────────────────────────────────────────────────────────
 
+// Pseudo battery id of the Realtime "Total" view (real ids start at 1).
+const ALL_BATTERIES = -1;
+
+// Batteries run in parallel: currents and capacities add up, voltage is
+// common (averaged over the readings), SoC is remaining / total capacity.
+function sumLive(lives) {
+  const L = lives.filter(l => l && l.voltage_mv != null);
+  if (!L.length) return {};
+  const sum = k => L.reduce((a, l) => a + (l[k] || 0), 0);
+  const total = sum('total_mah');
+  return {
+    voltage_mv:    Math.round(sum('voltage_mv') / L.length),
+    current_ma:    sum('current_ma'),
+    remaining_mah: sum('remaining_mah'),
+    total_mah:     total,
+    soc_pct:       total ? Math.round(100 * sum('remaining_mah') / total) : null,
+  };
+}
+
 function bms() {
   return {
+    ALL_BATTERIES,
     tab:         'realtime',
-    live:        {},
+    live:        {},  // gauges + SoC: the selected battery, or the sum
+    packs:       [],  // [{id, name, live}] status strip + cells per battery
     info:        null,
     status:      'connecting…',
     histHours:   24,
@@ -306,7 +327,9 @@ function bms() {
       // the current pick falls out of it on a tab switch, re-pick.
       this.$watch('tab', () => {
         const sel = this.selectableBatteries();
-        if (sel.length && !sel.some(b => b.id === this.battery))
+        if (this.tab === 'realtime' && this._rtTotal && sel.length > 1)
+          this.selectBattery(ALL_BATTERIES);
+        else if (sel.length && !sel.some(b => b.id === this.battery))
           this.selectBattery(sel[0].id);
         if (this.tab === 'energy') this.loadEnergy();
       });
@@ -346,19 +369,24 @@ function bms() {
 
     _pickDefaultBattery() {
       const sel = this.selectableBatteries();
-      this.battery = sel.length ? sel[0].id : 0;
+      // Several monitored batteries: Realtime opens on their sum.
+      this._rtTotal = sel.length > 1;
+      this.battery = this._rtTotal ? ALL_BATTERIES : sel.length ? sel[0].id : 0;
     },
 
     selectBattery(id) {
       if (id === this.battery) return;
+      if (this.tab === 'realtime') this._rtTotal = id === ALL_BATTERIES;
       this.battery = id;
       this.live = {};
+      this.packs = [];
       this.info = null;
       this._fetchInfo();
       if (this.tab === 'energy') this.loadEnergy();
     },
 
     async _fetchInfo() {
+      if (this.battery === ALL_BATTERIES) return;   // Total has no settings
       try {
         const r = await fetch('info?battery=' + this.battery);
         if (r.ok) this.info = await r.json();
@@ -369,12 +397,23 @@ function bms() {
       const poll = async () => {
         try {
           const now = Math.floor(Date.now() / 1000);
-          const q = '&battery=' + this.battery;
-          const r = await fetch(`history?time_start=${now - 10}&time_end=${now}&count=1${q}`);
-          if (!r.ok) throw new Error(r.status);
-          const j = await r.json();
-          if (j.data && j.data.length) {
-            this.live = j.data[0];
+          const picked = this.battery;
+          const shown = picked === ALL_BATTERIES
+            ? this.selectableBatteries()
+            : this.batteries.filter(b => b.id === picked);
+          const ids = shown.length ? shown.map(b => b.id) : [picked];
+          const lives = await Promise.all(ids.map(async id => {
+            const r = await fetch(`history?time_start=${now - 10}&time_end=${now}&count=1&battery=${id}`);
+            if (!r.ok) throw new Error(r.status);
+            const j = await r.json();
+            return j.data && j.data.length ? j.data[0] : null;
+          }));
+          if (picked !== this.battery) return;   // selection changed meanwhile
+          if (lives.some(l => l)) {
+            this.packs = ids.map((id, n) => ({
+              id, name: shown[n] ? shown[n].name : '', live: lives[n] || {},
+            }));
+            this.live = picked === ALL_BATTERIES ? sumLive(lives) : lives[0];
             this.status = new Date().toLocaleTimeString();
             this._updateGauges();
           }
@@ -397,11 +436,14 @@ function bms() {
       }
       if (this.live.current_ma != null) {
         const i = this.live.current_ma / 1000;
-        drawGauge('gauge-i', i, this._iMin, this._iMax, 'A', [
-          {from: this._iMin, to: -20,           color: '#f85149'},
-          {from: -20,        to: 0,             color: '#d29922'},
-          {from: 0,          to: 20,            color: '#3fb950'},
-          {from: 20,         to: this._iMax,    color: '#d29922'},
+        // The scale is per battery; the sum of N batteries gets N times it.
+        const n = Math.max(1, this.packs.length);
+        const iMin = this._iMin * n, iMax = this._iMax * n;
+        drawGauge('gauge-i', i, iMin, iMax, 'A', [
+          {from: iMin,    to: -20 * n, color: '#f85149'},
+          {from: -20 * n, to: 0,       color: '#d29922'},
+          {from: 0,       to: 20 * n,  color: '#3fb950'},
+          {from: 20 * n,  to: iMax,    color: '#d29922'},
         ]);
       }
     },
@@ -486,8 +528,8 @@ function bms() {
       }
     },
 
-    cellClass(mv, i) {
-      const active = (this.live.cells_mv || []).filter(v => v > 0);
+    cellClass(mv, cells) {
+      const active = (cells || []).filter(v => v > 0);
       if (!active.length) return '';
       const max = Math.max(...active), min = Math.min(...active);
       if (mv === max) return 'hi';

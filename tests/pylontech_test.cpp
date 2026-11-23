@@ -298,3 +298,34 @@ TEST(AnalogResponse, RoundTripsThroughSlaveBuilder) {
     EXPECT_EQ(a.cycle_count,         30);
     ASSERT_EQ(a.temperatures_k10.size(), 3u);
 }
+
+// ---- extended capacity (module above 65 Ah) -------------------------------
+
+TEST(ExtendedCapacity, BigBatteryIsOneModuleWith24BitCapacities) {
+    set_extended_capacity(true);
+    EXPECT_EQ(module_count_for_capacity(314'000), 1);
+
+    JkCellInfo cells;
+    cells.voltages_mv.assign(16, 3300);
+    JkPackInfo pack;
+    pack.voltage_mv             = 52'800;
+    pack.current_ma             = -12'000;
+    pack.total_capacity_mah     = 314'000;
+    pack.remaining_capacity_mah = 157'000;
+    pack.cycle_count            = 3;
+
+    auto f = parse_or_fail(build_analog_response(make_request(0x42), cells, pack));
+    AnalogResponse a;
+    ASSERT_TRUE(a.deserialize(f.info));
+    EXPECT_EQ(a.user_defined_count,   4);
+    // u16 fields: both divided by 5, so remain / total is still 50 %.
+    EXPECT_EQ(a.remain_capacity_mah,  31'400);
+    EXPECT_EQ(a.total_capacity_mah,   62'800);
+    EXPECT_EQ(a.remain_capacity_ext_mah, 157'000u);
+    EXPECT_EQ(a.total_capacity_ext_mah,  314'000u);
+    EXPECT_EQ(a.cycle_count,          3);
+
+    // Off again: the classic split into modules of at most 65 Ah.
+    set_extended_capacity(false);
+    EXPECT_EQ(module_count_for_capacity(314'000), 5);
+}

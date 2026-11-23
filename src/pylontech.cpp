@@ -155,6 +155,11 @@ struct BeWriter {
         out.push_back(static_cast<uint8_t>(v & 0xFF));
     }
     void i16(int16_t v) { u16(static_cast<uint16_t>(v)); }
+    void u24(uint32_t v) {
+        out.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+        out.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        out.push_back(static_cast<uint8_t>(v & 0xFF));
+    }
 };
 
 struct BeReader {
@@ -176,6 +181,13 @@ struct BeReader {
         return v;
     }
     int16_t i16() { return static_cast<int16_t>(u16()); }
+    uint32_t u24() {
+        if (i + 3 > n) { ok = false; return 0; }
+        const uint32_t v = (uint32_t{p[i]} << 16) | (uint32_t{p[i + 1]} << 8) |
+                           p[i + 2];
+        i += 3;
+        return v;
+    }
 };
 
 }
@@ -214,6 +226,10 @@ bool AnalogResponse::deserialize(const std::vector<uint8_t>& info) {
     user_defined_count  = r.u8();
     total_capacity_mah  = r.u16();
     cycle_count         = r.u16();
+    if (user_defined_count == 4) {
+        remain_capacity_ext_mah = r.u24();
+        total_capacity_ext_mah  = r.u24();
+    }
     return r.ok;
 }
 
@@ -249,6 +265,10 @@ void AnalogResponse::serialize(std::vector<uint8_t>& info) const {
     w.u8(user_defined_count);
     w.u16(total_capacity_mah);
     w.u16(cycle_count);
+    if (user_defined_count == 4) {
+        w.u24(remain_capacity_ext_mah);
+        w.u24(total_capacity_ext_mah);
+    }
 }
 
 void AlarmResponse::serialize(std::vector<uint8_t>& info) const {
@@ -310,6 +330,12 @@ namespace {
 // US2000B-class layout marker — exposed in the analog response so the inverter
 // recognises us as a 15-cell-per-module Pylontech.
 constexpr uint8_t  kUserDefinedUS2000B = 2;
+// "User defined items = 4": module above 65 Ah, capacities in the 24-bit
+// fields after the cycle count and 0xFFFF in the u16 ones.
+constexpr uint8_t  kUserDefinedBigModule = 4;
+constexpr uint32_t kCapU24Max = 0xFFFFFFu;
+
+bool g_extended_capacity = false;
 
 constexpr uint8_t  kAlarmStatusByte1Normal = 0x00;
 constexpr uint8_t  kAlarmStatusByte2Normal = 0x0E;
@@ -362,8 +388,12 @@ ScaledCapacity scale_capacity_to_u16(uint32_t total_mah, uint32_t remain_mah) {
 
 }
 
+void set_extended_capacity(bool on) { g_extended_capacity = on; }
+bool extended_capacity() { return g_extended_capacity; }
+
 uint8_t module_count_for_capacity(uint32_t total_capacity_mah) {
     if (total_capacity_mah <= kCapU16Max) return 1;
+    if (g_extended_capacity && total_capacity_mah <= kCapU24Max) return 1;
     const uint32_t n = (total_capacity_mah + kCapU16Max - 1) / kCapU16Max;
     return static_cast<uint8_t>(std::min<uint32_t>(n, 0xFFu));
 }
@@ -385,10 +415,21 @@ std::vector<uint8_t> build_analog_response(const PylontechFrame& req,
     r.module_voltage_mv = clamp_u16(static_cast<uint32_t>(
         std::max<int32_t>(pack.voltage_mv, 0)));
 
+    // The u16 fields always carry real numbers, scaled down together when
+    // the module is above 65 Ah so that remain / total still is the SoC.
+    // The protocol says to put 0xFFFF there for a big module, but Deye
+    // (SG04LP3, verified 2026-11-23) takes its SoC from these two fields and
+    // ignores the 24-bit ones: with 0xFFFF / 0xFFFF it reads 100 %.
     const auto cap = scale_capacity_to_u16(pack.total_capacity_mah,
                                            pack.remaining_capacity_mah);
     r.remain_capacity_mah = cap.remain_mah;
     r.total_capacity_mah  = cap.total_mah;
+    if (g_extended_capacity && pack.total_capacity_mah > kCapU16Max) {
+        r.user_defined_count   = kUserDefinedBigModule;
+        r.total_capacity_ext_mah  = std::min(pack.total_capacity_mah, kCapU24Max);
+        r.remain_capacity_ext_mah = std::min(pack.remaining_capacity_mah,
+                                          r.total_capacity_ext_mah);
+    }
     r.cycle_count         = clamp_u16(pack.cycle_count);
 
     PylontechFrame f = ok_response(req);

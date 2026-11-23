@@ -26,6 +26,10 @@
 <!-- Only monitored batteries: legacy is history-only, reserve has no live
      telemetry — both would be empty in Realtime/Settings. -->
 <div class="batt-bar" x-show="selectableBatteries().length > 1 && tab !== 'history'">
+  <!-- Realtime only: all monitored batteries summed (they run in parallel). -->
+  <button class="batt-chip" x-show="tab==='realtime'"
+          :class="{active: battery===ALL_BATTERIES}"
+          @click="selectBattery(ALL_BATTERIES)">Total</button>
   <template x-for="b in selectableBatteries()" :key="b.id">
     <button class="batt-chip"
             :class="{active: b.id===battery}"
@@ -63,33 +67,40 @@
     </div>
   </div>
 
-  <div class="status-strip">
-    <span class="flag" :class="live.charging    ? 'on':'off'" x-text="'Charge: '   +(live.charging    ?'ON':'OFF')"></span>
-    <span class="flag" :class="live.discharging ? 'on':'off'" x-text="'Discharge: '+(live.discharging ?'ON':'OFF')"></span>
-    <span class="flag" :class="live.balancer    ? 'on':'off'" x-text="'Balancer: ' +(live.balancer    ?'ON':'OFF')"></span>
-    <span class="muted" x-show="live.balancer" x-text="live.balance_current_ma != null ? (live.balance_current_ma/1000).toFixed(3)+' A' : ''"></span>
-    <span class="flag" :class="live.errors      ? 'err':'off'" x-text="'Errors: '  +(live.errors?'0x'+live.errors.toString(16).toUpperCase():'0')"></span>
-    <span class="sep"></span>
-    <span class="muted" x-text="live.temp1_dc   != null ? 'T1: '  +(live.temp1_dc/10).toFixed(1)+'°C' : ''"></span>
-    <span class="muted" x-text="live.temp2_dc   != null ? 'T2: '  +(live.temp2_dc/10).toFixed(1)+'°C' : ''"></span>
-    <span class="muted" x-text="live.mos_temp_dc!= null ? 'MOS: ' +(live.mos_temp_dc/10).toFixed(1)+'°C' : ''"></span>
-    <span class="sep"></span>
-    <span class="muted" x-text="live.avg_cell_mv  != null ? 'Avg: '+live.avg_cell_mv+' mV' : ''"></span>
-    <span class="muted" x-text="live.diff_cell_mv != null ? 'ΔU: ' +live.diff_cell_mv+' mV' : ''"></span>
-    <span class="sep"></span>
-    <span class="muted" x-text="live.cycle_count != null ? 'Cycles: '+live.cycle_count : ''"></span>
-  </div>
-
-  <div class="section-title">Cell Voltages</div>
-  <div class="cells-grid">
-    <template x-for="(mv, i) in live.cells_mv" :key="i">
-      <div class="cell-card" :class="cellClass(mv, i)">
-        <div class="cell-num"  x-text="String(i+1).padStart(2,'0')"></div>
-        <div class="cell-mv"   x-text="(mv/1000).toFixed(3)"></div>
-        <div class="cell-mohm" x-text="live.resistance_uohm && live.resistance_uohm[i] != null ? (live.resistance_uohm[i]/1000).toFixed(3)+' mΩ' : ''"></div>
+  <!-- One block per shown battery: a single one, or every monitored one
+       under Total. -->
+  <template x-for="p in packs" :key="p.id">
+    <div>
+      <div class="section-title pack-title" x-show="packs.length > 1" x-text="p.name"></div>
+      <div class="status-strip">
+        <span class="flag" :class="p.live.charging    ? 'on':'off'" x-text="'Charge: '   +(p.live.charging    ?'ON':'OFF')"></span>
+        <span class="flag" :class="p.live.discharging ? 'on':'off'" x-text="'Discharge: '+(p.live.discharging ?'ON':'OFF')"></span>
+        <span class="flag" :class="p.live.balancer    ? 'on':'off'" x-text="'Balancer: ' +(p.live.balancer    ?'ON':'OFF')"></span>
+        <span class="muted" x-show="p.live.balancer" x-text="p.live.balance_current_ma != null ? (p.live.balance_current_ma/1000).toFixed(3)+' A' : ''"></span>
+        <span class="flag" :class="p.live.errors      ? 'err':'off'" x-text="'Errors: '  +(p.live.errors?'0x'+p.live.errors.toString(16).toUpperCase():'0')"></span>
+        <span class="sep"></span>
+        <span class="muted" x-text="p.live.temp1_dc   != null ? 'T1: '  +(p.live.temp1_dc/10).toFixed(1)+'°C' : ''"></span>
+        <span class="muted" x-text="p.live.temp2_dc   != null ? 'T2: '  +(p.live.temp2_dc/10).toFixed(1)+'°C' : ''"></span>
+        <span class="muted" x-text="p.live.mos_temp_dc!= null ? 'MOS: ' +(p.live.mos_temp_dc/10).toFixed(1)+'°C' : ''"></span>
+        <span class="sep"></span>
+        <span class="muted" x-text="p.live.avg_cell_mv  != null ? 'Avg: '+p.live.avg_cell_mv+' mV' : ''"></span>
+        <span class="muted" x-text="p.live.diff_cell_mv != null ? 'ΔU: ' +p.live.diff_cell_mv+' mV' : ''"></span>
+        <span class="sep"></span>
+        <span class="muted" x-text="p.live.cycle_count != null ? 'Cycles: '+p.live.cycle_count : ''"></span>
       </div>
-    </template>
-  </div>
+
+      <div class="section-title">Cell Voltages</div>
+      <div class="cells-grid">
+        <template x-for="(mv, i) in p.live.cells_mv" :key="i">
+          <div class="cell-card" :class="cellClass(mv, p.live.cells_mv)">
+            <div class="cell-num"  x-text="String(i+1).padStart(2,'0')"></div>
+            <div class="cell-mv"   x-text="(mv/1000).toFixed(3)"></div>
+            <div class="cell-mohm" x-text="p.live.resistance_uohm && p.live.resistance_uohm[i] != null ? (p.live.resistance_uohm[i]/1000).toFixed(3)+' mΩ' : ''"></div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </template>
 
 </div>
 

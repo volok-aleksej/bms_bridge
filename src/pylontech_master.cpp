@@ -91,15 +91,20 @@ BatteryProtocol::Parsed PylontechMasterProtocol::feed(const uint8_t* data,
                 t.pack.battery_temp2_dC   = k10_to_dC(a.temperatures_k10[1]);
             if (a.temperatures_k10.size() > 2)
                 t.pack.power_tube_temp_dC = k10_to_dC(a.temperatures_k10[2]);
-            t.pack.remaining_capacity_mah = a.remain_capacity_mah;
-            t.pack.total_capacity_mah     = a.total_capacity_mah;
+            // A module above 65 Ah reports in the 24-bit fields.
+            const bool big = a.user_defined_count == 4 &&
+                             a.total_capacity_ext_mah != 0;
+            const uint32_t remain = big ? a.remain_capacity_ext_mah
+                                        : a.remain_capacity_mah;
+            const uint32_t total  = big ? a.total_capacity_ext_mah
+                                        : a.total_capacity_mah;
+            t.pack.remaining_capacity_mah = remain;
+            t.pack.total_capacity_mah     = total;
             t.pack.cycle_count            = a.cycle_count;
             t.pack.state_of_charge_pct =
-                a.total_capacity_mah
-                    ? static_cast<uint8_t>(std::min<uint32_t>(
-                          100, static_cast<uint32_t>(a.remain_capacity_mah)
-                                   * 100 / a.total_capacity_mah))
-                    : 0;
+                total ? static_cast<uint8_t>(std::min<uint64_t>(
+                            100, uint64_t{remain} * 100 / total))
+                      : 0;
             // charging/discharging flags + errors come from 0x44 / 0x92 —
             // a separate follow-up; left at defaults for now.
 

@@ -59,6 +59,7 @@ private:
     void stop_scan();
     bool connect_to_peripheral();
     void teardown_peripheral();
+    void drop_stale_connection();
 
     Settings cfg_;
     BmsEventQueue& queue_;

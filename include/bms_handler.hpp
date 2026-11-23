@@ -32,6 +32,8 @@ public:
     void on_poll_tick();
     void on_settings_tick();
 
+    void set_periodic_requests(bool on) { periodic_requests_ = on; }
+
 private:
     void send(const std::vector<uint8_t>& bytes, const char* what);
     void on_telemetry(JkCellInfo cells, JkPackInfo pack);
@@ -46,4 +48,9 @@ private:
     std::chrono::milliseconds             state_update_interval_;
     std::chrono::steady_clock::time_point last_history_write_{};
     std::chrono::steady_clock::time_point last_state_update_{};
+
+    bool periodic_requests_ = true;
+    bool have_settings_     = false;   // since the last connect
+    std::chrono::steady_clock::time_point last_telemetry_{};
+    bool streaming() const;
 };

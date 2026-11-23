@@ -57,6 +57,16 @@ target_link_libraries(bms_core PRIVATE
 # the test binary (which never pulls ble_client.o into its link) doesn't
 # need to link the BLE stack either.
 target_link_libraries(bms_core PRIVATE simpleble::simpleble)
+# ble_client.cpp also reaches the BlueZ device objects underneath SimpleBLE
+# (to drop a stale link), which needs the library's internal headers and
+# the libdbus ones they include.
+pkg_check_modules(DBUS1 REQUIRED IMPORTED_TARGET dbus-1)
+target_include_directories(bms_core PRIVATE
+    third_party/SimpleBLE/simplebluez/include
+    third_party/SimpleBLE/simpledbus/include
+    third_party/SimpleBLE/dependencies/external
+)
+target_link_libraries(bms_core PRIVATE PkgConfig::DBUS1)
 
 add_executable(bms_bridge src/main.cpp)
 target_link_libraries(bms_bridge PRIVATE

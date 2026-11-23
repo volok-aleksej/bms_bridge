@@ -46,12 +46,15 @@ void Battery::start(Dispatcher& dispatcher, History& history) {
                 milliseconds(cfg_.bms_state_update_interval_ms));
 
             transport_->start(dispatcher, *handler_);
+            handler_->set_periodic_requests(cfg_.periodic_requests);
             dispatcher.add_timer(cfg_.bms_poll_period_ms,
                                  [this] { handler_->on_poll_tick(); });
             dispatcher.add_timer(cfg_.settings_refresh_period_ms,
                                  [this] { handler_->on_settings_tick(); });
-            spdlog::info("battery '{}': bluetooth/jk_bt @ {}",
-                         cfg_.name, cfg_.address);
+            spdlog::info("battery '{}': bluetooth/jk_bt @ {}{}",
+                         cfg_.name, cfg_.address,
+                         cfg_.periodic_requests
+                             ? "" : ", requests only until streaming");
             break;
         }
         case BatteryLink::Ttl: {

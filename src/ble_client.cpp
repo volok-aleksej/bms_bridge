@@ -2,6 +2,8 @@
 
 #include "ble_scan_coordinator.hpp"
 
+#include <simplebluez/Adapter.h>
+#include <simplebluez/Device.h>
 #include <spdlog/spdlog.h>
 
 #include <sys/epoll.h>
@@ -113,12 +115,12 @@ bool BleClient::connect_to_peripheral() {
         peripheral_->connect();
     } catch (const std::exception& e) {
         spdlog::warn("ble: connect failed: {}", e.what());
-        peripheral_.reset();
+        teardown_peripheral();
         return false;
     }
     if (!peripheral_->is_connected()) {
         spdlog::warn("ble: peripheral did not transition to connected");
-        peripheral_.reset();
+        teardown_peripheral();
         return false;
     }
 
@@ -144,8 +146,7 @@ bool BleClient::connect_to_peripheral() {
             });
     } catch (const std::exception& e) {
         spdlog::warn("ble: notify subscribe failed: {}", e.what());
-        try { peripheral_->disconnect(); } catch (...) {}
-        peripheral_.reset();
+        teardown_peripheral();
         return false;
     }
 
@@ -156,11 +157,32 @@ bool BleClient::connect_to_peripheral() {
 void BleClient::teardown_peripheral() {
     if (!peripheral_) return;
     try {
-        if (peripheral_->is_connected()) peripheral_->disconnect();
+        peripheral_->disconnect();
     } catch (const std::exception& e) {
-        spdlog::warn("ble: disconnect: {}", e.what());
+        spdlog::debug("ble: disconnect: {}", e.what());
     }
     peripheral_.reset();
+}
+
+void BleClient::drop_stale_connection() {
+    if (!adapter_) return;
+    auto* bluez = static_cast<SimpleBluez::Adapter*>(adapter_->underlying());
+    if (!bluez) return;
+    std::string node = cfg_.device_uuid;
+    std::transform(node.begin(), node.end(), node.begin(), [](unsigned char c) {
+        return c == ':' ? '_' : static_cast<char>(std::toupper(c));
+    });
+    try {
+        auto dev = bluez->device_get(bluez->path() + "/dev_" + node);
+        if (!dev || !dev->connected()) return;
+        spdlog::warn("ble: {} is already connected in BlueZ, disconnecting "
+                     "the stale link", cfg_.device_uuid);
+        dev->disconnect();
+    } catch (const std::exception& e) {
+        // No such device object yet (never seen), or it went away meanwhile.
+        spdlog::debug("ble: stale link check for {}: {}", cfg_.device_uuid,
+                      e.what());
+    }
 }
 
 void BleClient::enter(State s) {
@@ -187,6 +209,7 @@ void BleClient::enter(State s) {
 
         case State::Scan:
             work_event_.consume();
+            drop_stale_connection();
             if (start_scan()) {
                 timer_.arm(std::chrono::milliseconds(cfg_.scan_timeout_ms));
             } else {
@@ -228,6 +251,7 @@ void BleClient::on_slot_event() {
 }
 
 void BleClient::on_stop_event() {
+    if (state_ == State::Scan) stop_scan();
     teardown_peripheral();
     release_slot();
     state_ = State::Stopping;

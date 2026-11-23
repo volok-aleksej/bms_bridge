@@ -24,6 +24,8 @@ struct AnalogResponse {
     uint8_t  user_defined_count = 2;
     uint16_t total_capacity_mah = 0;
     uint16_t cycle_count = 0;
+    uint32_t remain_capacity_ext_mah = 0;
+    uint32_t total_capacity_ext_mah  = 0;
 
     void serialize(std::vector<uint8_t>& info) const;
     // Master-side: decode a battery's INFO payload. False if short/garbled.
@@ -90,6 +92,12 @@ struct JkPackInfo;
 struct JkSettings;
 
 uint8_t module_count_for_capacity(uint32_t total_capacity_mah);
+
+// Capacity encoding towards the inverter. Off (default): every battery is
+// split into modules of at most 65 Ah. On: a module may be any size and
+// adds the 24-bit capacities ("user defined items = 4").
+void set_extended_capacity(bool on);
+bool extended_capacity();
 
 // Try to consume a single frame from the head of `buf`.
 //   > 0 — number of bytes consumed; `out` populated.

@@ -41,6 +41,10 @@ struct BatteryConfig {
     int reconnect_ms = 5000;
     int bms_poll_period_ms = 5000;
     int settings_refresh_period_ms = 60000;
+    // bluetooth only: repeat the cell-info / device-info requests on the two
+    // timers above. false = repeat the cell-info request only until the BMS
+    // is streaming (and again if the stream stops), then stay silent.
+    bool periodic_requests = true;
     int bms_state_update_interval_ms = 500;
 
     bool monitored() const {
@@ -51,6 +55,8 @@ struct BatteryConfig {
 struct InverterConfig {
     std::string uart_device;
     int uart_baud = 115200;
+    // One address per battery, capacities above 65 Ah in the 24-bit fields.
+    bool extended_capacity = false;
 };
 
 struct HttpConfig {

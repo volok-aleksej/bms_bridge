@@ -93,6 +93,7 @@ cfg_opt_t battery_opts[] = {
     CFG_INT("reconnect_ms",                 5000,  CFGF_NONE),
     CFG_INT("bms_poll_period_ms",           5000,  CFGF_NONE),
     CFG_INT("settings_refresh_period_ms",   60000, CFGF_NONE),
+    CFG_BOOL("periodic_requests",           cfg_true, CFGF_NONE),
     CFG_INT("bms_state_update_interval_ms", 500,   CFGF_NONE),
     CFG_END()
 };
@@ -100,6 +101,7 @@ cfg_opt_t battery_opts[] = {
 cfg_opt_t inverter_opts[] = {
     CFG_STR("uart", nullptr, CFGF_NODEFAULT),
     CFG_INT("baud", 115200,  CFGF_NONE),
+    CFG_BOOL("extended_capacity", cfg_false, CFGF_NONE),
     CFG_END()
 };
 
@@ -166,6 +168,7 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
     if (out.inverter.uart_device.empty())
         return fail("inverter { uart = ... } is required");
     out.inverter.uart_baud = cfg_getint(inv, "baud");
+    out.inverter.extended_capacity = cfg_getbool(inv, "extended_capacity");
 
     if (cfg_t* s = cfg_getsec(cfg, "http")) {
         out.http.bind      = sstr(s, "bind");
@@ -216,6 +219,7 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         bc.reconnect_ms      = cfg_getint(b, "reconnect_ms");
         bc.bms_poll_period_ms           = cfg_getint(b, "bms_poll_period_ms");
         bc.settings_refresh_period_ms   = cfg_getint(b, "settings_refresh_period_ms");
+        bc.periodic_requests            = cfg_getbool(b, "periodic_requests");
         bc.bms_state_update_interval_ms = cfg_getint(b, "bms_state_update_interval_ms");
 
         out.batteries.push_back(std::move(bc));

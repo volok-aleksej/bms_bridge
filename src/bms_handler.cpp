@@ -23,13 +23,21 @@ void BmsHandler::send(const std::vector<uint8_t>& bytes, const char* what) {
         spdlog::trace("bms[{}]: {} send skipped (link down)", battery_id_, what);
 }
 
+bool BmsHandler::streaming() const {
+    return have_settings_ &&
+           std::chrono::steady_clock::now() - last_telemetry_ <
+               2 * history_interval_;
+}
+
 void BmsHandler::on_poll_tick() {
     spdlog::trace("bms[{}]: poll tick", battery_id_);
+    if (!periodic_requests_ && streaming()) return;
     send(protocol_->poll_request(), "poll");
 }
 
 void BmsHandler::on_settings_tick() {
     spdlog::trace("bms[{}]: settings tick", battery_id_);
+    if (!periodic_requests_) return;
     send(protocol_->settings_request(), "settings");
 }
 
@@ -37,6 +45,8 @@ void BmsHandler::on_connected() {
     spdlog::info("bms[{}]: connected", battery_id_);
     state_.set_connected(true);
     protocol_->reset();
+    have_settings_  = false;
+    last_telemetry_ = {};
     send(protocol_->settings_request(), "settings");
     send(protocol_->poll_request(), "poll");
 }
@@ -52,11 +62,14 @@ void BmsHandler::on_bytes(const uint8_t* data, size_t len) {
     if (parsed.telemetry)
         on_telemetry(std::move(parsed.telemetry->cells),
                      std::move(parsed.telemetry->pack));
-    if (parsed.settings)
+    if (parsed.settings) {
         state_.apply_settings(std::move(*parsed.settings));
+        have_settings_ = true;
+    }
 }
 
 void BmsHandler::on_telemetry(JkCellInfo cells, JkPackInfo pack) {
+    last_telemetry_ = std::chrono::steady_clock::now();
     spdlog::debug("bms[{}]: V={:.3f} I={:.3f} SoC={}% cells={} cycles={} "
                   "T1={:.1f} T2={:.1f} Tmos={:.1f}",
                   battery_id_,

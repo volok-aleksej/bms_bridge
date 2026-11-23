@@ -4,6 +4,7 @@
 #include "history.hpp"
 #include "http_server.hpp"
 #include "inverter.hpp"
+#include "pylontech.hpp"
 #include "logger.hpp"
 
 #include <spdlog/spdlog.h>
@@ -97,6 +98,10 @@ int main(int argc, char** argv) {
     for (auto& b : batteries)
         b->start(dispatcher, history);
 
+    set_extended_capacity(cfg.inverter.extended_capacity);
+    if (cfg.inverter.extended_capacity)
+        spdlog::info("inverter: extended capacity format, one address per "
+                     "battery");
     Inverter inv(cfg.inverter.uart_device, cfg.inverter.uart_baud, batteries);
     inv.attach(dispatcher);
 
