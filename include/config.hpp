@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,9 @@ struct InverterConfig {
     int uart_baud = 115200;
     // One address per battery, capacities above 65 Ah in the 24-bit fields.
     bool extended_capacity = false;
+    // VER byte of our responses; 0 echoes the request's. From 0x32 on a
+    // module above 65 Ah has 0xFFFF in the classic capacity fields.
+    uint8_t protocol_version = 0;
 };
 
 struct HttpConfig {

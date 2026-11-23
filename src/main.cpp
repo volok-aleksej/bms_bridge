@@ -102,6 +102,10 @@ int main(int argc, char** argv) {
     if (cfg.inverter.extended_capacity)
         spdlog::info("inverter: extended capacity format, one address per "
                      "battery");
+    set_protocol_version(cfg.inverter.protocol_version);
+    if (cfg.inverter.protocol_version)
+        spdlog::info("inverter: responses carry protocol version 0x{:02X}",
+                     cfg.inverter.protocol_version);
     Inverter inv(cfg.inverter.uart_device, cfg.inverter.uart_baud, batteries);
     inv.attach(dispatcher);
 

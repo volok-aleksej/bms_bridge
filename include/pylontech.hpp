@@ -99,6 +99,12 @@ uint8_t module_count_for_capacity(uint32_t total_capacity_mah);
 void set_extended_capacity(bool on);
 bool extended_capacity();
 
+// VER byte of the responses. 0 (default) echoes the request's VER. With
+// extended capacity and VER >= 0x32 (the revision that added the 24-bit
+// fields) a module above 65 Ah carries 0xFFFF in the classic u16 capacity
+// fields, as the spec says; below that they hold scaled-down values.
+void set_protocol_version(uint8_t ver);
+
 // Try to consume a single frame from the head of `buf`.
 //   > 0 — number of bytes consumed; `out` populated.
 //   = 0 — need more bytes (no complete frame yet).

@@ -102,6 +102,7 @@ cfg_opt_t inverter_opts[] = {
     CFG_STR("uart", nullptr, CFGF_NODEFAULT),
     CFG_INT("baud", 115200,  CFGF_NONE),
     CFG_BOOL("extended_capacity", cfg_false, CFGF_NONE),
+    CFG_INT("protocol_version", 0, CFGF_NONE),
     CFG_END()
 };
 
@@ -169,6 +170,10 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         return fail("inverter { uart = ... } is required");
     out.inverter.uart_baud = cfg_getint(inv, "baud");
     out.inverter.extended_capacity = cfg_getbool(inv, "extended_capacity");
+    const long pver = cfg_getint(inv, "protocol_version");
+    if (pver < 0 || pver > 0xFF)
+        return fail("inverter { protocol_version } must be 0..0xFF");
+    out.inverter.protocol_version = static_cast<uint8_t>(pver);
 
     if (cfg_t* s = cfg_getsec(cfg, "http")) {
         out.http.bind      = sstr(s, "bind");

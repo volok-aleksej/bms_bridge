@@ -336,6 +336,10 @@ constexpr uint8_t  kUserDefinedBigModule = 4;
 constexpr uint32_t kCapU24Max = 0xFFFFFFu;
 
 bool g_extended_capacity = false;
+uint8_t g_protocol_version = 0;
+
+// Protocol revision that introduced the 24-bit capacity fields.
+constexpr uint8_t kVerExtendedCapacity = 0x32;
 
 constexpr uint8_t  kAlarmStatusByte1Normal = 0x00;
 constexpr uint8_t  kAlarmStatusByte2Normal = 0x0E;
@@ -347,7 +351,7 @@ uint8_t echoed_cmd_value(const PylontechFrame& req) {
 
 PylontechFrame ok_response(const PylontechFrame& req) {
     PylontechFrame r;
-    r.ver  = req.ver;
+    r.ver  = g_protocol_version ? g_protocol_version : req.ver;
     r.adr  = req.adr;
     r.cid1 = 0x46;
     r.cid2 = 0x00;
@@ -390,6 +394,7 @@ ScaledCapacity scale_capacity_to_u16(uint32_t total_mah, uint32_t remain_mah) {
 
 void set_extended_capacity(bool on) { g_extended_capacity = on; }
 bool extended_capacity() { return g_extended_capacity; }
+void set_protocol_version(uint8_t ver) { g_protocol_version = ver; }
 
 uint8_t module_count_for_capacity(uint32_t total_capacity_mah) {
     if (total_capacity_mah <= kCapU16Max) return 1;
@@ -415,17 +420,22 @@ std::vector<uint8_t> build_analog_response(const PylontechFrame& req,
     r.module_voltage_mv = clamp_u16(static_cast<uint32_t>(
         std::max<int32_t>(pack.voltage_mv, 0)));
 
-    // The u16 fields always carry real numbers, scaled down together when
-    // the module is above 65 Ah so that remain / total still is the SoC.
-    // The protocol says to put 0xFFFF there for a big module, but Deye
-    // (SG04LP3, verified 2026-11-23) takes its SoC from these two fields and
-    // ignores the 24-bit ones: with 0xFFFF / 0xFFFF it reads 100 %.
+    // The u16 fields carry real numbers, scaled down together when the
+    // module is above 65 Ah so that remain / total still is the SoC. The
+    // protocol says to put 0xFFFF there for a big module, and we do when
+    // answering as revision 3.2 or later. Deye (SG04LP3, verified
+    // 2026-11-23) takes its SoC from these two fields and ignores the 24-bit
+    // ones whatever the VER: with 0xFFFF / 0xFFFF it reads 100 %.
     const auto cap = scale_capacity_to_u16(pack.total_capacity_mah,
                                            pack.remaining_capacity_mah);
     r.remain_capacity_mah = cap.remain_mah;
     r.total_capacity_mah  = cap.total_mah;
     if (g_extended_capacity && pack.total_capacity_mah > kCapU16Max) {
         r.user_defined_count   = kUserDefinedBigModule;
+        if (ok_response(req).ver >= kVerExtendedCapacity) {
+            r.remain_capacity_mah = 0xFFFF;
+            r.total_capacity_mah  = 0xFFFF;
+        }
         r.total_capacity_ext_mah  = std::min(pack.total_capacity_mah, kCapU24Max);
         r.remain_capacity_ext_mah = std::min(pack.remaining_capacity_mah,
                                           r.total_capacity_ext_mah);
