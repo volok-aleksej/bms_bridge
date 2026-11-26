@@ -1,3 +1,30 @@
+bms-bridge (2.2.0) stable; urgency=medium
+
+  * BLE: a failed connect no longer leaves the link up in BlueZ; the link is
+    always torn down, and a link to our BMS that is already up before a scan
+    (left by a failed attempt or a killed process) is dropped first.
+  * batery { periodic_requests = false }: the cell-info request to a
+    bluetooth BMS is repeated only until the BMS is streaming, and again if
+    the stream stops, instead of every poll period.
+  * inverter { extended_capacity = true } sends a battery above 65 Ah as a
+    single module instead of splitting it: 24-bit capacities added, classic
+    fields scaled down (Deye reads the SoC from the classic ones).
+  * inverter { protocol_version = 0x33 } sets the VER byte of the responses
+    (default 0: echo the request's). From 0x32 on, with extended_capacity,
+    the classic capacity fields of a battery above 65 Ah carry 0xFFFF.
+  * batery { type = "ttl"; protocol = "jk_rs485"; mirror = "<battery>";
+    jk_address = 1..15 }: an output that presents the mirrored battery to a
+    JK-PB master BMS as one of its parallel packs. The bridge answers the
+    master's polls on the parallel RS485 port with JK frames built from the
+    battery's data, so the master counts it in what it reports to the
+    inverter.
+  * The inverter block is optional: without it the bridge runs no Pylontech
+    link (the inverter talks to the master BMS).
+  * Realtime page: "Total" view sums current, power and capacity of all
+    monitored batteries and lists each battery's status and cells.
+
+ -- Alexey Volokitin <elenaluk89@gmail.com>  Thu, 26 Nov 2026 13:00:00 +0200
+
 bms-bridge (2.1.0) stable; urgency=medium
 
   * http { bind } sets the listen address; the template binds 127.0.0.1
