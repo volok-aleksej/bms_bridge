@@ -39,6 +39,32 @@ inline int32_t le32s(const uint8_t* p) {
     return static_cast<int32_t>(le32(p));
 }
 
+inline void put16(std::vector<uint8_t>& f, size_t off, uint16_t v) {
+    f[off]     = static_cast<uint8_t>(v);
+    f[off + 1] = static_cast<uint8_t>(v >> 8);
+}
+
+inline void put32(std::vector<uint8_t>& f, size_t off, uint32_t v) {
+    put16(f, off, static_cast<uint16_t>(v));
+    put16(f, off + 2, static_cast<uint16_t>(v >> 16));
+}
+
+constexpr size_t kMaxCells = 32;
+
+// Settings frame: RS485 address of the device.
+constexpr size_t kSettingsDeviceAddressOffset = 270;
+
+std::vector<uint8_t> empty_frame(uint8_t type) {
+    std::vector<uint8_t> f(kJkResponseSize, 0);
+    std::copy(std::begin(kJkResponseMagic), std::end(kJkResponseMagic), f.begin());
+    f[4] = type;
+    return f;
+}
+
+void seal_frame(std::vector<uint8_t>& f) {
+    f[kJkResponseSize - 1] = jk_crc8(f.data(), kJkResponseSize - 1);
+}
+
 std::string read_string(const uint8_t* p, size_t max_len) {
     size_t real = 0;
     while (real < max_len && p[real] != 0) ++real;
@@ -280,4 +306,158 @@ bool parse_settings(const uint8_t* frame, size_t len, JkSettings& out) {
     out.scp_delay_us               = le32(frame + 134);
     out.start_balance_mv           = static_cast<uint16_t>(le32(frame + 138));
     return true;
+}
+
+// ---- frame builders (JK02_32S layout, the offsets of the parsers) ----------
+
+std::vector<uint8_t> build_cell_info_frame(const JkCellInfo& cells,
+                                           const JkPackInfo& pack) {
+    auto f = empty_frame(kJkFrameTypeCellInfo);
+
+    const size_t n = std::min(cells.voltages_mv.size(), kMaxCells);
+    for (size_t i = 0; i < n; ++i) {
+        put16(f, 6 + i * 2, cells.voltages_mv[i]);
+        if (i < cells.resistance_uohm.size())
+            put16(f, 80 + i * 2, cells.resistance_uohm[i]);
+    }
+    put32(f, 70, n >= 32 ? 0xFFFFFFFFu : (1u << n) - 1);   // enabled cells
+    put16(f, 74, cells.average_voltage_mv);
+    put16(f, 76, cells.voltage_diff_mv);
+    if (n) {                                               // 1-based on the wire
+        f[78] = static_cast<uint8_t>(cells.max_voltage_cell_idx + 1);
+        f[79] = static_cast<uint8_t>(cells.min_voltage_cell_idx + 1);
+    }
+
+    put16(f, 144, static_cast<uint16_t>(pack.power_tube_temp_dC));
+    put32(f, 150, static_cast<uint32_t>(pack.voltage_mv));
+    const int64_t power_mw =
+        static_cast<int64_t>(pack.voltage_mv) * pack.current_ma / 1000;
+    put32(f, 154, static_cast<uint32_t>(power_mw < 0 ? -power_mw : power_mw));
+    put32(f, 158, static_cast<uint32_t>(pack.current_ma));
+    put16(f, 162, static_cast<uint16_t>(pack.battery_temp1_dC));
+    put16(f, 164, static_cast<uint16_t>(pack.battery_temp2_dC));
+    put16(f, 166, pack.errors_bitmask);
+    put16(f, 170, static_cast<uint16_t>(pack.balance_current_ma));
+    // Balancer action: 0 off, 1 charging the cell, 2 discharging it — the
+    // direction is the sign of the balance current.
+    f[172] = !pack.balancer_enabled ? 0 : pack.balance_current_ma < 0 ? 2 : 1;
+    f[173] = pack.state_of_charge_pct;
+    put32(f, 174, pack.remaining_capacity_mah);
+    put32(f, 178, pack.total_capacity_mah);
+    put32(f, 182, pack.cycle_count);
+    f[190] = 100;                                          // state of health, %
+    f[198] = pack.charging_enabled ? 1 : 0;
+    f[199] = pack.discharging_enabled ? 1 : 0;
+
+    seal_frame(f);
+    return f;
+}
+
+std::vector<uint8_t> build_settings_frame(const JkSettings& s) {
+    auto f = empty_frame(kJkFrameTypeSettings);
+    auto temp = [&](size_t off, int16_t dC) {
+        put32(f, off, static_cast<uint32_t>(static_cast<int32_t>(dC)));
+    };
+
+    put32(f,   6, s.smart_sleep_mv);
+    put32(f,  10, s.cell_uvp_mv);
+    put32(f,  14, s.cell_uvpr_mv);
+    put32(f,  18, s.cell_ovp_mv);
+    put32(f,  22, s.cell_ovpr_mv);
+    put32(f,  26, s.balance_trigger_mv);
+    put32(f,  30, s.soc_100_mv);
+    put32(f,  34, s.soc_0_mv);
+    put32(f,  38, s.request_charge_mv);
+    put32(f,  42, s.request_float_mv);
+    put32(f,  46, s.power_off_mv);
+    put32(f,  50, s.max_charge_current_ma);
+    put32(f,  54, s.charge_ocp_delay_s);
+    put32(f,  58, s.charge_ocp_recovery_s);
+    put32(f,  62, s.max_discharge_current_ma);
+    put32(f,  66, s.discharge_ocp_delay_s);
+    put32(f,  70, s.discharge_ocp_recovery_s);
+    put32(f,  74, s.scp_recovery_s);
+    put32(f,  78, s.max_balance_current_ma);
+    temp( 82, s.charge_otp_dC);
+    temp( 86, s.charge_otp_recovery_dC);
+    temp( 90, s.discharge_otp_dC);
+    temp( 94, s.discharge_otp_recovery_dC);
+    temp( 98, s.charge_utp_dC);
+    temp(102, s.charge_utp_recovery_dC);
+    temp(106, s.mosfet_otp_dC);
+    temp(110, s.mosfet_otp_recovery_dC);
+    put32(f, 114, s.cell_count);
+    put32(f, 118, s.charging_switch_on ? 1 : 0);
+    put32(f, 122, s.discharging_switch_on ? 1 : 0);
+    put32(f, 126, s.balancer_switch_on ? 1 : 0);
+    put32(f, 130, s.nominal_capacity_mah);
+    put32(f, 134, s.scp_delay_us);
+    put32(f, 138, s.start_balance_mv);
+
+    seal_frame(f);
+    return f;
+}
+
+// ---- parallel RS485 link ---------------------------------------------------
+
+uint16_t modbus_crc16(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; ++b)
+            crc = (crc & 1) ? static_cast<uint16_t>((crc >> 1) ^ 0xA001)
+                            : static_cast<uint16_t>(crc >> 1);
+    }
+    return crc;
+}
+
+int try_parse_jk_rs485_request(const uint8_t* buf, size_t len,
+                                  JkRs485Request& out) {
+    // Fixed bytes of a poll; the address, the register low byte and the two
+    // data bytes vary.
+    auto mismatch = [&](size_t pos, uint8_t want) {
+        return len > pos && buf[pos] != want;
+    };
+    if (mismatch(1, 0x10) || mismatch(2, 0x16) || mismatch(4, 0x00) ||
+        mismatch(5, 0x01) || mismatch(6, 0x02))
+        return -1;
+    if (len < kJkRs485RequestSize) return 0;
+
+    const uint16_t crc = modbus_crc16(buf, kJkRs485RequestSize - 2);
+    if (buf[9] != (crc & 0xFF) || buf[10] != (crc >> 8)) return -1;
+
+    out.address = buf[0];
+    out.reg     = static_cast<uint16_t>(buf[2] << 8 | buf[3]);
+    return static_cast<int>(kJkRs485RequestSize);
+}
+
+std::optional<uint8_t> jk_rs485_frame_type(uint16_t reg) {
+    switch (reg) {
+        case kJkRs485RegDeviceInfo: return kJkFrameTypeDeviceInfo;
+        case kJkRs485RegSettings:   return kJkFrameTypeSettings;
+        case kJkRs485RegCellInfo:   return kJkFrameTypeCellInfo;
+        default:                       return std::nullopt;
+    }
+}
+
+std::vector<uint8_t> build_jk_rs485_response(uint8_t address, uint16_t reg,
+                                                const std::vector<uint8_t>& frame) {
+    if (frame.size() != kJkResponseSize) return {};
+
+    std::vector<uint8_t> out = frame;
+    // Over Bluetooth byte 5 is a frame counter; on this link the master's own
+    // frames carry its address there.
+    out[5] = address;
+    if (out[4] == kJkFrameTypeSettings)
+        out[kSettingsDeviceAddressOffset] = address;
+    out[kJkResponseSize - 1] = jk_crc8(out.data(), kJkResponseSize - 1);
+
+    const uint8_t ack[6] = {address, 0x10,
+                            static_cast<uint8_t>(reg >> 8),
+                            static_cast<uint8_t>(reg & 0xFF), 0x00, 0x01};
+    const uint16_t crc = modbus_crc16(ack, sizeof ack);
+    out.insert(out.end(), ack, ack + sizeof ack);
+    out.push_back(static_cast<uint8_t>(crc & 0xFF));
+    out.push_back(static_cast<uint8_t>(crc >> 8));
+    return out;
 }

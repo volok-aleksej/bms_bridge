@@ -8,6 +8,7 @@
 
 class BatteryTransport;
 class BmsHandler;
+class JkRs485Slave;
 class History;
 class Dispatcher;
 
@@ -25,13 +26,21 @@ public:
     const SharedState&   state()     const { return state_; }
     bool                 monitored() const { return cfg_.monitored(); }
 
+    // The battery named by config().mirror; set before start().
+    void set_mirror(const Battery* m) { mirror_ = m; }
+
     void start(Dispatcher& dispatcher, History& history);
     void stop();
 
 private:
+    void start_relay(Dispatcher& dispatcher);
+
     BatteryConfig cfg_;
     SharedState   state_;
 
     std::unique_ptr<BatteryTransport> transport_;
     std::unique_ptr<BmsHandler>       handler_;
+
+    const Battery*                    mirror_ = nullptr;
+    std::unique_ptr<JkRs485Slave>  relay_;   // protocol jk_rs485
 };

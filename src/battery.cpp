@@ -18,8 +18,32 @@ Battery::Battery(BatteryConfig cfg) : cfg_(std::move(cfg)) {}
 
 Battery::~Battery() = default;
 
+void Battery::start_relay(Dispatcher& dispatcher) {
+    if (!mirror_) return;   // config validation guarantees it
+    if (cfg_.link != BatteryLink::Ttl || cfg_.protocol != "jk_rs485") {
+        spdlog::warn("battery '{}': output over {}/{} not implemented (only "
+                     "ttl/jk_rs485) — inactive",
+                     cfg_.name, cfg_.link_raw, cfg_.protocol);
+        return;
+    }
+    transport_ = std::make_unique<UartTransport>(
+        cfg_.address, cfg_.uart_baud, cfg_.reconnect_ms);
+    relay_ = std::make_unique<JkRs485Slave>(
+        cfg_.name, static_cast<uint8_t>(cfg_.jk_address),
+        mirror_->state(), *transport_);
+    relay_->start(dispatcher);
+    transport_->start(dispatcher, *relay_);
+    spdlog::info("battery '{}': ttl/jk_rs485 @ {} adr={}, relays '{}'",
+                 cfg_.name, cfg_.address, cfg_.jk_address, mirror_->name());
+}
+
 void Battery::start(Dispatcher& dispatcher, History& history) {
     using std::chrono::milliseconds;
+
+    if (cfg_.relay()) {
+        start_relay(dispatcher);
+        return;
+    }
 
     switch (cfg_.link) {
         case BatteryLink::Bluetooth: {
@@ -91,5 +115,6 @@ void Battery::start(Dispatcher& dispatcher, History& history) {
 }
 
 void Battery::stop() {
+    if (relay_) relay_->stop();
     if (transport_) transport_->stop();
 }

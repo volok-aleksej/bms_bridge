@@ -68,9 +68,13 @@ int main(int argc, char** argv) {
 
     init_logger(cfg.log_level, cfg.log_file);
 
-    spdlog::info("bms_bridge starting; {} batteries, inverter uart={}@{}",
-                 cfg.batteries.size(), cfg.inverter.uart_device,
-                 cfg.inverter.uart_baud);
+    if (cfg.inverter.enabled())
+        spdlog::info("bms_bridge starting; {} batteries, inverter uart={}@{}",
+                     cfg.batteries.size(), cfg.inverter.uart_device,
+                     cfg.inverter.uart_baud);
+    else
+        spdlog::info("bms_bridge starting; {} batteries, no inverter link",
+                     cfg.batteries.size());
 
     History    history(cfg.history.db_path,
                        std::chrono::seconds(cfg.history.ram_window_s));
@@ -80,6 +84,10 @@ int main(int argc, char** argv) {
     batteries.reserve(cfg.batteries.size());
     for (auto& bc : cfg.batteries)
         batteries.push_back(std::make_unique<Battery>(bc));
+    for (auto& b : batteries)
+        for (const auto& o : batteries)
+            if (!b->config().mirror.empty() && o->name() == b->config().mirror)
+                b->set_mirror(o.get());
 
     // Every configured battery physically exists, so it must have a row in
     // the batteries table (hence an id, hence appear in /batteries) even
@@ -98,16 +106,20 @@ int main(int argc, char** argv) {
     for (auto& b : batteries)
         b->start(dispatcher, history);
 
-    set_extended_capacity(cfg.inverter.extended_capacity);
-    if (cfg.inverter.extended_capacity)
-        spdlog::info("inverter: extended capacity format, one address per "
-                     "battery");
-    set_protocol_version(cfg.inverter.protocol_version);
-    if (cfg.inverter.protocol_version)
-        spdlog::info("inverter: responses carry protocol version 0x{:02X}",
-                     cfg.inverter.protocol_version);
-    Inverter inv(cfg.inverter.uart_device, cfg.inverter.uart_baud, batteries);
-    inv.attach(dispatcher);
+    std::unique_ptr<Inverter> inv;
+    if (cfg.inverter.enabled()) {
+        set_extended_capacity(cfg.inverter.extended_capacity);
+        if (cfg.inverter.extended_capacity)
+            spdlog::info("inverter: extended capacity format, one address "
+                         "per battery");
+        set_protocol_version(cfg.inverter.protocol_version);
+        if (cfg.inverter.protocol_version)
+            spdlog::info("inverter: responses carry protocol version 0x{:02X}",
+                         cfg.inverter.protocol_version);
+        inv = std::make_unique<Inverter>(cfg.inverter.uart_device,
+                                         cfg.inverter.uart_baud, batteries);
+        inv->attach(dispatcher);
+    }
 
     HttpServer http_server(history, batteries, cfg.http.bind,
                            cfg.http.http_port, cfg.http.www_root);

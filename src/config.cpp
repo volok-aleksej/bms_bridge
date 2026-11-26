@@ -17,7 +17,7 @@ bool link_from_str(const std::string& s, BatteryLink& out) {
 }
 
 bool is_supported_protocol(const std::string& p) {
-    return p == "jk_bt" || p == "pylontech";
+    return p == "jk_bt" || p == "pylontech" || p == "jk_rs485";
 }
 
 int vf_type(cfg_t* cfg, cfg_opt_t* opt) {
@@ -56,6 +56,15 @@ int vf_battery(cfg_t* cfg, cfg_opt_t* opt) {
         }
     }
 
+    if (proto && std::string(proto) == "jk_rs485") {
+        long addr = cfg_getint(sec, "jk_address");
+        if (addr < 1 || addr > 15) {
+            cfg_error(cfg, "battery '%s': 'jk_address' must be 1..15",
+                      cfg_title(sec));
+            return -1;
+        }
+    }
+
     const char* type = cfg_getstr(sec, "type");
     if (type && std::string(type) == "reserve") {
         const char* mir = cfg_getstr(sec, "mirror");
@@ -85,6 +94,9 @@ cfg_opt_t battery_opts[] = {
     // ttl link / pylontech protocol
     CFG_INT("pylontech_address", 0, CFGF_NODEFAULT),
     CFG_INT("uart_baud", 115200, CFGF_NONE),
+
+    // ttl link / jk_rs485 protocol
+    CFG_INT("jk_address", 0, CFGF_NODEFAULT),
 
     // reserve link
     CFG_STR("mirror", nullptr, CFGF_NODEFAULT),
@@ -163,11 +175,9 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
     out.log_level = cfg_getint(cfg, "log_level");
     out.log_file  = sstr(cfg, "log_file");
 
+    // No inverter block (or no uart in it): no Pylontech link.
     cfg_t* inv = cfg_getsec(cfg, "inverter");
-    if (!inv) return fail("inverter { ... } block is required");
     out.inverter.uart_device = sstr(inv, "uart");
-    if (out.inverter.uart_device.empty())
-        return fail("inverter { uart = ... } is required");
     out.inverter.uart_baud = cfg_getint(inv, "baud");
     out.inverter.extended_capacity = cfg_getbool(inv, "extended_capacity");
     const long pver = cfg_getint(inv, "protocol_version");
@@ -209,7 +219,7 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
             return fail("battery '" + bc.name + "': 'address' is required");
         if (bc.monitored() && bc.protocol.empty())
             return fail("battery '" + bc.name + "': 'protocol' is required");
-        if (!bc.monitored() && bc.capacity <= 0)
+        if (bc.link == BatteryLink::Reserve && bc.capacity <= 0)
             return fail("reserve battery '" + bc.name +
                         "': 'capacity' must be > 0");
 
@@ -221,6 +231,7 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         bc.mirror            = sstr(b, "mirror");
         bc.uart_baud         = cfg_getint(b, "uart_baud");
         bc.pylontech_address = cfg_getint(b, "pylontech_address");
+        bc.jk_address        = cfg_getint(b, "jk_address");
         bc.reconnect_ms      = cfg_getint(b, "reconnect_ms");
         bc.bms_poll_period_ms           = cfg_getint(b, "bms_poll_period_ms");
         bc.settings_refresh_period_ms   = cfg_getint(b, "settings_refresh_period_ms");
@@ -230,17 +241,19 @@ bool load_config(const std::string& path, AppConfig& out, std::string& error) {
         out.batteries.push_back(std::move(bc));
     }
 
-    // Cross-section: a reserve's `mirror` must name another battery that is monitored.
-    for (const auto& bc : out.batteries) {
+    // Cross-section: `mirror` of a reserve or an output must name another
+    // battery that is monitored.
+    for (auto& bc : out.batteries) {
         if (bc.monitored()) continue;
         auto it = std::find_if(out.batteries.begin(), out.batteries.end(),
             [&](const BatteryConfig& o) { return o.name == bc.mirror; });
         if (it == out.batteries.end())
-            return fail("reserve battery '" + bc.name + "': mirror '" +
+            return fail("battery '" + bc.name + "': mirror '" +
                         bc.mirror + "' is not a known battery");
         if (!it->monitored())
-            return fail("reserve battery '" + bc.name + "': mirror '" +
+            return fail("battery '" + bc.name + "': mirror '" +
                         bc.mirror + "' is not a monitored battery");
+        if (bc.relay() && bc.capacity <= 0) bc.capacity = it->capacity;
     }
 
     cfg_free(cfg);

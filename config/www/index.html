@@ -34,7 +34,7 @@
     <button class="batt-chip"
             :class="{active: b.id===battery}"
             @click="selectBattery(b.id)">
-      <span x-text="b.legacy || b.name === '' ? 'Archive' : b.name"></span>
+      <span x-text="batteryLabel(b)"></span>
     </button>
   </template>
 </div>

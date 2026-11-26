@@ -35,8 +35,9 @@ Inverter::~Inverter() = default;
 void Inverter::build_address_map() {
     uint8_t adr = kBaseAddress;
     for (const auto& b : batteries_) {
+        if (b->config().relay()) continue;   // an output, not a battery
         Battery* mirror = nullptr;
-        if (!b->monitored()) {
+        if (b->config().link == BatteryLink::Reserve) {
             const std::string& want = b->config().mirror;
             auto it = std::find_if(batteries_.begin(), batteries_.end(),
                 [&](const std::unique_ptr<Battery>& o) {

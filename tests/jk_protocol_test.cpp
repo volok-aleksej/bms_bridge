@@ -354,3 +354,110 @@ TEST(JkFrameAssembler, RecoversAfterMisalignedMagicPrefix) {
                                    kSniffedCellInfoFrame.end()),
               *got);
 }
+
+// ---- parallel RS485 link ---------------------------------------------------
+
+// Captured on the parallel RS485 port of a JK-PB2A16S20P (fw 19.31) master.
+const std::vector<uint8_t> kPollAdr11CellInfo = {
+    0x0B, 0x10, 0x16, 0x20, 0x00, 0x01, 0x02, 0x00, 0x00, 0xA8, 0x51};
+const std::vector<uint8_t> kPollAdr11Settings = {
+    0x0B, 0x10, 0x16, 0x1E, 0x00, 0x01, 0x02, 0x00, 0x00, 0xAC, 0x8F};
+// Trailer of the master's own cell-info frame.
+const std::vector<uint8_t> kAckAdr0CellInfo = {
+    0x00, 0x10, 0x16, 0x20, 0x00, 0x01, 0x05, 0x9A};
+
+TEST(JkRs485, ParsesCapturedPolls) {
+    JkRs485Request r;
+    EXPECT_EQ(try_parse_jk_rs485_request(kPollAdr11CellInfo.data(),
+                                            kPollAdr11CellInfo.size(), r), 11);
+    EXPECT_EQ(r.address, 11);
+    EXPECT_EQ(r.reg, kJkRs485RegCellInfo);
+    EXPECT_EQ(try_parse_jk_rs485_request(kPollAdr11Settings.data(),
+                                            kPollAdr11Settings.size(), r), 11);
+    EXPECT_EQ(r.reg, kJkRs485RegSettings);
+}
+
+TEST(JkRs485, NeedsMoreOrDrops) {
+    JkRs485Request r;
+    EXPECT_EQ(try_parse_jk_rs485_request(kPollAdr11CellInfo.data(), 6, r), 0);
+    auto bad = kPollAdr11CellInfo;
+    bad[10] ^= 0xFF;
+    EXPECT_LT(try_parse_jk_rs485_request(bad.data(), bad.size(), r), 0);
+    const uint8_t noise[] = {0x55, 0xAA, 0xEB, 0x90};
+    EXPECT_LT(try_parse_jk_rs485_request(noise, sizeof noise, r), 0);
+}
+
+TEST(JkRs485, ResponseIsFrameWithAddressThenAck) {
+    std::vector<uint8_t> frame(kJkResponseSize, 0);
+    frame[0] = 0x55; frame[1] = 0xAA; frame[2] = 0xEB; frame[3] = 0x90;
+    frame[4] = kJkFrameTypeCellInfo;
+    frame[5] = 0x52;                       // Bluetooth frame counter
+    frame[kJkResponseSize - 1] = jk_crc8(frame.data(), kJkResponseSize - 1);
+
+    const auto out = build_jk_rs485_response(0, kJkRs485RegCellInfo, frame);
+    ASSERT_EQ(out.size(), kJkResponseSize + kJkRs485AckSize);
+    EXPECT_EQ(out[5], 0);
+    EXPECT_EQ(out[kJkResponseSize - 1], jk_crc8(out.data(), kJkResponseSize - 1));
+    EXPECT_EQ(std::vector<uint8_t>(out.begin() + kJkResponseSize, out.end()),
+              kAckAdr0CellInfo);
+
+    EXPECT_TRUE(build_jk_rs485_response(1, kJkRs485RegCellInfo, {}).empty());
+}
+
+TEST(JkRs485, FrameTypeOfRegister) {
+    EXPECT_EQ(jk_rs485_frame_type(kJkRs485RegCellInfo), kJkFrameTypeCellInfo);
+    EXPECT_EQ(jk_rs485_frame_type(kJkRs485RegSettings), kJkFrameTypeSettings);
+    EXPECT_EQ(jk_rs485_frame_type(kJkRs485RegDeviceInfo), kJkFrameTypeDeviceInfo);
+    EXPECT_FALSE(jk_rs485_frame_type(0x1000));
+}
+
+// ---- frame builders --------------------------------------------------------
+
+// A frame built from what the parser got out of a real one must carry the
+// same bytes at every offset the parser reads.
+TEST(JkBuildFrame, CellInfoMatchesSniffedFrameAtParsedOffsets) {
+    JkCellInfo cells; JkPackInfo pack;
+    ASSERT_TRUE(parse_cell_info(kSniffedCellInfoFrame.data(),
+                                kSniffedCellInfoFrame.size(), cells, pack));
+    const auto f = build_cell_info_frame(cells, pack);
+    ASSERT_EQ(f.size(), kJkResponseSize);
+    EXPECT_EQ(f[kJkResponseSize - 1], jk_crc8(f.data(), kJkResponseSize - 1));
+
+    const std::pair<size_t, size_t> parsed[] = {   // offset, length
+        // 154 (power) is left out: the BMS rounds its own measurement, we
+        // derive it from voltage and current.
+        {0, 5}, {6, 64}, {70, 4}, {74, 6}, {80, 64}, {144, 2}, {150, 4},
+        {158, 4}, {162, 2}, {164, 2}, {166, 2}, {170, 2}, {172, 1},
+        {173, 1}, {174, 4}, {178, 4}, {182, 4}, {190, 1}, {198, 2},
+    };
+    for (const auto& [off, len] : parsed)
+        for (size_t i = off; i < off + len; ++i)
+            EXPECT_EQ(f[i], kSniffedCellInfoFrame[i]) << "offset " << i;
+
+    JkCellInfo c2; JkPackInfo p2;
+    ASSERT_TRUE(parse_cell_info(f.data(), f.size(), c2, p2));
+    EXPECT_EQ(c2.voltages_mv, cells.voltages_mv);
+    EXPECT_EQ(c2.resistance_uohm, cells.resistance_uohm);
+    EXPECT_EQ(p2.current_ma, pack.current_ma);
+    EXPECT_EQ(p2.state_of_charge_pct, pack.state_of_charge_pct);
+}
+
+TEST(JkBuildFrame, SettingsMatchSniffedFrameAtParsedOffsets) {
+    JkSettings s;
+    ASSERT_TRUE(parse_settings(kSniffedSettingsFrame.data(),
+                               kSniffedSettingsFrame.size(), s));
+    const auto f = build_settings_frame(s);
+    ASSERT_EQ(f.size(), kJkResponseSize);
+    EXPECT_EQ(f[kJkResponseSize - 1], jk_crc8(f.data(), kJkResponseSize - 1));
+    for (size_t i = 0; i < 142; ++i)
+        if (i != 5) EXPECT_EQ(f[i], kSniffedSettingsFrame[i]) << "offset " << i;
+}
+
+TEST(JkRs485, SettingsResponseCarriesDeviceAddress) {
+    const auto out = build_jk_rs485_response(
+        3, kJkRs485RegSettings, build_settings_frame(JkSettings{}));
+    ASSERT_EQ(out.size(), kJkResponseSize + kJkRs485AckSize);
+    EXPECT_EQ(out[5], 3);
+    EXPECT_EQ(out[270], 3);
+    EXPECT_EQ(out[kJkResponseSize - 1], jk_crc8(out.data(), kJkResponseSize - 1));
+}

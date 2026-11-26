@@ -167,3 +167,51 @@ bool parse_cell_info(const uint8_t* frame, size_t len,
                      JkCellInfo& cells_out, JkPackInfo& pack_out);
 bool parse_device_info(const uint8_t* frame, size_t len, JkDeviceInfo& out);
 bool parse_settings(const uint8_t* frame, size_t len, JkSettings& out);
+
+std::vector<uint8_t> build_cell_info_frame(const JkCellInfo& cells,
+                                           const JkPackInfo& pack);
+std::vector<uint8_t> build_settings_frame(const JkSettings& s);
+
+// Parallel RS485 link ------------------------------------------------------
+//
+// The link between JK-PB packs wired in parallel. The master BMS (address 0)
+// polls addresses 1..15 with a Modbus "write multiple registers" to a trigger
+// register:
+//
+//   [adr] 10 16 [reg] 00 01 02 00 00 [crc lo] [crc hi]
+//
+// The addressed BMS answers with the 300-byte frame it would send over
+// Bluetooth (55 AA EB 90 [type] ...), followed by the Modbus acknowledge:
+//
+//   [adr] 10 16 [reg] 00 01 [crc lo] [crc hi]
+
+constexpr uint16_t kJkRs485RegDeviceInfo = 0x161C;   // frame type 0x03
+constexpr uint16_t kJkRs485RegSettings   = 0x161E;   // frame type 0x01
+constexpr uint16_t kJkRs485RegCellInfo   = 0x1620;   // frame type 0x02
+
+constexpr size_t kJkRs485RequestSize = 11;
+constexpr size_t kJkRs485AckSize     = 8;
+
+struct JkRs485Request {
+    uint8_t  address = 0;
+    uint16_t reg     = 0;
+};
+
+uint16_t modbus_crc16(const uint8_t* data, size_t len);
+
+// Try to consume one poll request from the head of `buf`.
+//   > 0 — bytes consumed; `out` populated.
+//   = 0 — need more bytes.
+//   < 0 — the head is not a request; drop -N bytes and try again.
+int try_parse_jk_rs485_request(const uint8_t* buf, size_t len,
+                                  JkRs485Request& out);
+
+// Frame type (byte 4 of the 300-byte frame) a trigger register asks for.
+std::optional<uint8_t> jk_rs485_frame_type(uint16_t reg);
+
+// Answer to a poll: `frame` (a valid 300-byte JK frame) with the address in
+// byte 5 (and in the device-address field of a settings frame) and the
+// checksum redone, then the Modbus acknowledge. Empty if `frame` is not 300
+// bytes.
+std::vector<uint8_t> build_jk_rs485_response(uint8_t address, uint16_t reg,
+                                                const std::vector<uint8_t>& frame);

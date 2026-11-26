@@ -296,6 +296,14 @@ function sumLive(lives) {
   };
 }
 
+// A battery that is no longer in the config keeps its history: the unnamed
+// one from before batteries had names is "Archive", the others keep their
+// name with a mark.
+function batteryLabel(b) {
+  if (b.name === '') return 'Archive';
+  return b.legacy ? b.name + ' (archive)' : b.name;
+}
+
 function bms() {
   return {
     ALL_BATTERIES,
@@ -309,6 +317,8 @@ function bms() {
     energyYear:   new Date().getFullYear(),
     energyMonth:  new Date().getMonth() + 1,
     energyStatus: '',
+    energyIds:    null,   // batteries with data in the shown month
+    _energyReq:   0,
     energyTotals: '',
     batteries:   [],  // from /batteries; history draws one line per battery
     battery:     0,   // selected batteries.id for Realtime/Settings/Energy
@@ -360,11 +370,18 @@ function bms() {
         // Settings: monitored + reserve (reserve shows config-derived info)
         return this.batteries.filter(b => !b.legacy);
       if (this.tab === 'energy')
-        // Energy: all batteries with potential samples — monitored + legacy,
-        // but NOT reserve (it never writes samples → nothing to show)
-        return this.batteries.filter(b => b.monitored || b.legacy);
+        // Energy: only the batteries that have data in the shown month
+        // (all candidates until the first load answers).
+        return this._energyCandidates().filter(
+          b => !this.energyIds || this.energyIds.includes(b.id));
       // Realtime: only monitored (live telemetry)
       return this.batteries.filter(b => !b.legacy && b.monitored);
+    },
+
+    // Batteries that can have daily energy at all: monitored + legacy, but
+    // not a reserve or an output (they never write samples).
+    _energyCandidates() {
+      return this.batteries.filter(b => b.monitored || b.legacy);
     },
 
     _pickDefaultBattery() {
@@ -498,7 +515,7 @@ function bms() {
           const b = list[i];
           const data = await this._fetchHistoryFor(b.id, t0s, t1s, per);
           if (!data.length) continue;
-          const label = b.legacy || b.name === '' ? 'Archive' : b.name;
+          const label = batteryLabel(b);
           series.push({ label, color: BATT_COLORS[i % BATT_COLORS.length], data });
           total += data.length;
         }
@@ -540,6 +557,13 @@ function bms() {
     infoRows() {
       const i = this.info;
       if (!i) return [];
+      if (i.relay) {
+        return [
+          ['Relays the frames of',  i.mirror],
+          ['To a JK master BMS on', i.port + ' @ ' + i.baud],
+          ['Address on that link',  String(i.jk_address)],
+        ];
+      }
       if (i.reserve) {
         const fA = v => (v / 1000).toFixed(1) + ' A';
         return [
@@ -619,11 +643,27 @@ function bms() {
 
     async loadEnergy() {
       this.energyStatus = 'loading…';
+      const reqNo = ++this._energyReq;
       try {
-        const r = await fetch(
-          `daily?battery=${this.battery}&year=${this.energyYear}&month=${this.energyMonth}`);
-        if (!r.ok) throw new Error(r.status);
-        const j = await r.json();
+        // The month of every candidate: the bar offers only the batteries
+        // that have data in it.
+        const byId = {};
+        await Promise.all(this._energyCandidates().map(async b => {
+          const r = await fetch(
+            `daily?battery=${b.id}&year=${this.energyYear}&month=${this.energyMonth}`);
+          if (!r.ok) throw new Error(r.status);
+          byId[b.id] = (await r.json()).data;
+        }));
+        if (reqNo !== this._energyReq) return;   // a newer load took over
+
+        this.energyIds = Object.keys(byId).map(Number)
+                               .filter(id => byId[id].length);
+        if (this.energyIds.length && !this.energyIds.includes(this.battery)) {
+          this.battery = this.energyIds[0];
+          this.info = null;
+          this._fetchInfo();
+        }
+        const j = { data: byId[this.battery] || [] };
 
         await this.$nextTick();
         if (!ENERGY_CHART) this._initEnergyChart();

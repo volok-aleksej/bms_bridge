@@ -335,10 +335,22 @@ void HttpServer::handle_info(evhttp_request* req) {
         return;
     }
 
+    if (bat->config().relay()) {
+        const BatteryConfig& c = bat->config();
+        CJsonPtr ro(cJSON_CreateObject());
+        cJSON_AddBoolToObject  (ro.p, "relay",      true);
+        cJSON_AddStringToObject(ro.p, "mirror",     c.mirror.c_str());
+        cJSON_AddStringToObject(ro.p, "port",       c.address.c_str());
+        cJSON_AddNumberToObject(ro.p, "baud",       c.uart_baud);
+        cJSON_AddNumberToObject(ro.p, "jk_address", c.jk_address);
+        send_json(req, HTTP_OK, cjson_print(ro.p));
+        return;
+    }
+
     // Reserve battery: no live BMS — its "settings" are what the bridge
     // synthesises for the inverter from the config (own capacity, a 0.5C
     // charge/discharge limit, SoC pinned at 100 %, zero current).
-    if (!bat->config().monitored()) {
+    if (bat->config().link == BatteryLink::Reserve) {
         const BatteryConfig& c = bat->config();
         constexpr int kReserveCRateTenths = 5;  // 0.5C (matches inverter.cpp)
         const uint32_t cap_mah  = static_cast<uint32_t>(c.capacity) * 1000;

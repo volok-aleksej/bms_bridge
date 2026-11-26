@@ -33,9 +33,15 @@ struct BatteryConfig {
     // value + 1 (the Pylontech protocol numbers modules from 2).
     int pylontech_address = 0;
 
-    // --- reserve-specific ---
-    // Name of the monitored battery this reserve mirrors (voltage / cells /
-    // temps come from it; required for reserve).
+    // --- jk_rs485-specific ---
+    // Address this entry answers at on the parallel RS485 link of a JK-PB
+    // master BMS, 1..15.
+    int jk_address = 0;
+
+    // --- common ---
+    // Name of the monitored battery this entry takes its data from.
+    // Required for reserve. On any other link it turns the entry into an
+    // output: instead of reading a BMS it gives that battery's data out.
     std::string mirror;
 
     // --- common optional (monitored links) ---
@@ -48,13 +54,23 @@ struct BatteryConfig {
     bool periodic_requests = true;
     int bms_state_update_interval_ms = 500;
 
+    // An output, not a battery of its own: gives the data of `mirror` out
+    // over its own link. The link may be any; `mirror` is what makes the
+    // entry an output.
+    bool relay() const {
+        return link != BatteryLink::Reserve && !mirror.empty();
+    }
+
+    // Has a BMS of its own that the bridge reads.
     bool monitored() const {
-        return link == BatteryLink::Bluetooth || link == BatteryLink::Ttl;
+        return link != BatteryLink::Reserve && !relay();
     }
 };
 
+// Optional: without `uart` there is no Pylontech link to an inverter.
 struct InverterConfig {
     std::string uart_device;
+    bool enabled() const { return !uart_device.empty(); }
     int uart_baud = 115200;
     // One address per battery, capacities above 65 Ah in the 24-bit fields.
     bool extended_capacity = false;
